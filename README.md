@@ -1,6 +1,6 @@
-# InboxGuardian MCP
+# Inbox AntiSpam MCP
 
-InboxGuardian analyzes mailbox metadata, groups messages by sender, explains
+Inbox AntiSpam MCP analyzes mailbox metadata, groups messages by sender, explains
 deterministic classifications, and lets the mailbox owner review cleanup before
 moving an exact approved set of messages to Trash.
 
