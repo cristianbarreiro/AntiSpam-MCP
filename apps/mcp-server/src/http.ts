@@ -64,12 +64,19 @@ export function createDashboardServer(
           result = { account: mailbox.account };
         } else if (url.pathname === "/api/pending") {
           result = cleanup.pending();
-        } else if (url.pathname === "/api/confirm" || url.pathname === "/api/reconcile") {
+        } else if (
+          url.pathname === "/api/confirm" ||
+          url.pathname === "/api/confirm-protected" ||
+          url.pathname === "/api/reconcile"
+        ) {
           const p = previewInput.safeParse(raw);
           if (!p.success) throw new AppError("VALIDATION_ERROR");
-          result = url.pathname.endsWith("confirm")
-            ? cleanup.confirmFromHuman(p.data.previewId)
-            : await cleanup.reconcile(p.data.previewId);
+          result =
+            url.pathname === "/api/confirm"
+              ? cleanup.confirmFromHuman(p.data.previewId)
+              : url.pathname === "/api/confirm-protected"
+                ? cleanup.confirmProtectedFromHuman(p.data.previewId)
+                : await cleanup.reconcile(p.data.previewId);
         } else if (url.pathname.startsWith("/api/tools/")) {
           result = await call(url.pathname.slice(11), raw);
         } else throw new AppError("NOT_FOUND");

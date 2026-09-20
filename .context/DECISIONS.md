@@ -37,9 +37,17 @@ Durable per-message intent before provider calls. Read-only reconciliation never
 retries mutation; overlapping uncertain operations block cleanup. Manual recovery
 is required if provider state cannot resolve uncertainty.
 
+## D008 — Differential P0 selection
+Status: accepted. Per-message classification augments the compatible group enum;
+MIXED is presentation-only. A single JSON-backed preview freezes granular selections
+across at most 20 senders and 1000 IDs. Protected inclusion needs a separate local
+confirmation. Gmail mutations remain per-message because batch success has no
+individual result detail; bounded backoff applies only to idempotent reads.
+
 ## Meaningful follow-up
-Live Gmail OAuth/API verification; richer sender/RFC normalization; actionable manual
-resolution of uncertain operations; encrypted/OS secret storage; user-facing account
-disposal; broader mailboxes beyond the preview cap; production readiness of SQLite
-runtime; accessibility and browser regression automation; Outlook adapter.
+Live Gmail OAuth/API verification; P1 policies and future-rule consent; richer
+sender/RFC normalization; actionable manual resolution of uncertain operations;
+encrypted/OS secret storage; user-facing account disposal; broader mailboxes beyond
+the preview cap; production readiness of SQLite runtime; automated browser regression;
+Outlook adapter.
 Remote hosting/multi-user auth requires a new security design, not a config switch.

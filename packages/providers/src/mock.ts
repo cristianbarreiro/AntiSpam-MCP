@@ -28,7 +28,7 @@ export function syntheticMessages(): MailMessage[] {
     { from: '"Unknown sender" <noise@unknown.example>', count: 6, signals: ["SPAM"] },
     { from: '"Billing" <billing@studio.example>', count: 3, signals: ["TRANSACTION"] },
   ] as const;
-  return senders.flatMap((s, index) =>
+  const regular = senders.flatMap((s, index) =>
     Array.from({ length: s.count }, (_, i) => ({
       id: `demo-${index}-${i}`,
       accountId: mockAccount.id,
@@ -43,6 +43,26 @@ export function syntheticMessages(): MailMessage[] {
       signals: [...s.signals],
     })),
   );
+  const mixed = Array.from(
+    { length: 12 },
+    (_, i): MailMessage => ({
+      id: `demo-mixed-${i}`,
+      accountId: mockAccount.id,
+      sender: parseSender('"Tienda Mixta" <shop@mixed.example>'),
+      subject:
+        i === 0 ? "Factura mensual" : i === 1 ? "Confirmación importante" : `Oferta ${i + 1}`,
+      date: new Date(Date.UTC(2026, 8, 19 - i, 10)).toISOString(),
+      unread: i % 3 !== 0,
+      trashed: false,
+      signals:
+        i === 0
+          ? ["TRANSACTION"]
+          : i === 1
+            ? ["IMPORTANT", "STARRED"]
+            : ["PROMOTION", "UNSUBSCRIBE"],
+    }),
+  );
+  return [...regular, ...mixed];
 }
 export class MockProvider implements MailProvider {
   readonly messages: Map<string, MailMessage>;

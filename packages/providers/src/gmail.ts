@@ -29,6 +29,7 @@ export function mapGmailMessage(raw: unknown, accountId: string): MailMessage {
   const labels = m.labelIds;
   if (labels.includes("SPAM")) signals.push("SPAM");
   if (labels.includes("IMPORTANT")) signals.push("IMPORTANT");
+  if (labels.includes("STARRED")) signals.push("STARRED");
   if (labels.includes("CATEGORY_PROMOTIONS")) signals.push("PROMOTION");
   if (headers.has("list-id")) signals.push("LIST");
   if (headers.has("list-unsubscribe")) signals.push("UNSUBSCRIBE");
@@ -122,10 +123,30 @@ export class GmailProvider implements MailProvider {
     string,
     { token: string; sender: string | undefined; expiry: number }
   >();
-  constructor(private readonly api: GmailTransport) {}
+  constructor(
+    private readonly api: GmailTransport,
+    private readonly delay = (milliseconds: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
+  ) {}
+  private async read(path: string): Promise<unknown> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await this.api.request(path);
+      } catch (error) {
+        if (
+          !(error instanceof AppError) ||
+          !["RATE_LIMITED", "PROVIDER_ERROR"].includes(error.code) ||
+          attempt === 2
+        )
+          throw error;
+        await this.delay(250 * 2 ** attempt);
+      }
+    }
+    throw new AppError("PROVIDER_ERROR");
+  }
   async getAccountInfo(): Promise<MailAccount> {
     if (!this.account) {
-      const r = z.object({ emailAddress: z.string() }).safeParse(await this.api.request("profile"));
+      const r = z.object({ emailAddress: z.string() }).safeParse(await this.read("profile"));
       if (!r.success) throw new AppError("PROVIDER_ERROR");
       const email = normalizeAddress(r.data.emailAddress);
       this.account = { id: `gmail:${email}`, provider: "gmail", email };
@@ -149,7 +170,7 @@ export class GmailProvider implements MailProvider {
     ])
       params.append("metadataHeaders", h);
     return mapGmailMessage(
-      await this.api.request(`messages/${encodeURIComponent(id)}?${params}`),
+      await this.read(`messages/${encodeURIComponent(id)}?${params}`),
       (await this.getAccountInfo()).id,
     );
   }
@@ -161,7 +182,7 @@ export class GmailProvider implements MailProvider {
       q: query,
       maxResults: String(input.limit),
       includeSpamTrash: "true",
-      fields: "messages/id,nextPageToken",
+      fields: "messages/id,nextPageToken,resultSizeEstimate",
     });
     if (input.cursor) {
       const c = this.cursors.get(input.cursor);
@@ -173,8 +194,9 @@ export class GmailProvider implements MailProvider {
       .object({
         messages: z.array(z.object({ id: z.string() })).default([]),
         nextPageToken: z.string().optional(),
+        resultSizeEstimate: z.number().int().nonnegative().optional(),
       })
-      .safeParse(await this.api.request(`messages?${params}`));
+      .safeParse(await this.read(`messages?${params}`));
     if (!r.success) throw new AppError("PROVIDER_ERROR");
     const items: MailMessage[] = [];
     // Deliberately sequential and bounded to avoid a burst of API requests.
@@ -197,7 +219,13 @@ export class GmailProvider implements MailProvider {
         expiry: Date.now() + 300000,
       });
     }
-    return { items, ...(cursor ? { cursor } : {}) };
+    return {
+      items,
+      ...(cursor ? { cursor } : {}),
+      ...(r.data.resultSizeEstimate !== undefined
+        ? { resultSizeEstimate: r.data.resultSizeEstimate }
+        : {}),
+    };
   }
   async moveToTrash(id: string) {
     if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new AppError("VALIDATION_ERROR");

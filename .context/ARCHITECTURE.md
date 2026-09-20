@@ -7,9 +7,9 @@ Status: canonical; implemented local single-user foundation.
 | Location | Responsibility |
 | --- | --- |
 | packages/core/src/domain.ts, store.ts | Provider-independent entities and ports |
-| packages/core/src/sender.ts, aggregation.ts, classification.ts | Pure normalization, statistics and deterministic rules |
+| packages/core/src/sender.ts, aggregation.ts, classification.ts | Pure normalization, per-message/group statistics and deterministic rules |
 | packages/core/src/mailbox.ts | Bounded scanning, ephemeral metadata cache, policies and sender paging |
-| packages/core/src/cleanup.ts | Preview, approval, execution, cancellation and read-only reconciliation |
+| packages/core/src/cleanup.ts | Granular/multi-sender preview, approval, execution, cancellation and reconciliation |
 | packages/providers/src/mock.ts | Synthetic in-memory mailbox |
 | packages/providers/src/gmail.ts | OAuth token boundary, Gmail REST, DTO mapping and opaque pagination |
 | packages/storage/src/sqlite.ts | SQLite adapter, versioned migration, atomic approval claim, outcomes and audit |

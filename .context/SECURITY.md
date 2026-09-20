@@ -17,7 +17,7 @@ key to an AI client. Multi-user/remote deployment needs a different auth design.
 
 A deliberate dashboard action creates a cryptographically random 256-bit approval;
 only its SHA-256 hash is stored. Approval binds the account, exact frozen preview,
-sender, action and selected IDs. Preview expires after ten minutes; approval after
+sender breakdown, action and selected IDs. Preview expires after ten minutes; approval after
 at most two minutes. Claim and audit are atomic and single-use before provider calls.
 Missing, forged, expired, replayed, wrong-preview/account or cancelled approval fails.
 A client-supplied boolean, sender address or classification is never sufficient.
@@ -26,6 +26,9 @@ Initial cleanup only moves to Trash. Permanent deletion is excluded. Provider
 retention may eventually purge Trash; never promise indefinite recovery.
 New arrivals are excluded from the frozen scope. Incomplete previews (>1000 selected
 messages or scan bound reached) are rejected instead of approving a hidden subset.
+New plans exclude important, transactional, starred and ignored scope by default.
+Including protected messages requires a separate local-dashboard acknowledgement
+before the normal single-use approval can be issued. MCP exposes neither capability.
 
 ## Failures, cancellation and recovery
 

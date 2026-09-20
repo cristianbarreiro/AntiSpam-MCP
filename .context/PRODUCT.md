@@ -1,6 +1,6 @@
 # Product
 
-Status: canonical behavior; Phase 1 implementation with limits documented in README.
+Status: canonical behavior; differential P0 with limits documented in README.
 
 Mailbox owners inspect spam, suspected spam, promotional/newsletter traffic,
 notifications and high-volume senders through MCP or a local dashboard.
@@ -10,10 +10,11 @@ preference. Expand a sender to fetch paginated subjects/dates/read state on dema
 Expose scan bounds and freshness; high volume alone does not imply spam.
 
 Categories: IMPORTANT, TRANSACTIONAL, NOTIFICATION, NEWSLETTER, PROMOTIONAL,
-SUSPECTED_SPAM, SPAM, UNKNOWN. Phase 1 uses generic provider/header signals and
-explicit reasons, with no LLM dependency. Importance protects the whole group;
-otherwise spam, transactional, promotional, mailing-list and automated evidence
-are considered in order. Volume/unread ratio requires multiple additional signals.
+SUSPECTED_SPAM, SPAM, UNKNOWN. Generic provider/header signals produce explicit
+Spanish reasons with no LLM dependency. Classification occurs per message; a sender
+with multiple categories is presented as MIXED with a breakdown. Importance,
+transactional state and starred state protect that message without hiding promotional
+peers. Volume or unread ratio alone never proves spam.
 
 User detection overrides win. IGNORE removes unwanted-mail candidacy and automatic
 classification, but the sender remains inspectable through includeIgnored. DETECT
@@ -26,3 +27,5 @@ The dashboard uses Review, a concrete message-count/date-range dialog, and a
 button naming the Trash effect. Users may cancel or approve for MCP instead.
 Show empty/error/loading, partial scan, failed/uncertain cleanup and success states.
 Confirmation and recovery guarantees belong to SECURITY; retention belongs to DATA.
+New cleanup plans support typed date/read/category/ID selection across up to 20
+senders and 1000 frozen IDs. They exclude protected and ignored scope by default.

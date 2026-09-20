@@ -10,6 +10,7 @@ not inferred coverage. README owns setup commands and manual Gmail prerequisites
 | --- | --- |
 | Domain | Sender parsing/isolation, deduplication, dates, read counts, deterministic reasons |
 | Classification | Spam/promotions, important protection, user override, no-reply not sufficient |
+| Mixed/granular P0 | Per-message breakdown, default protections, typed criteria, two-sender frozen plan |
 | Policies | Persistence, ignored candidates absent, restoration works |
 | Providers | Metadata-only mapping, opaque paging, errors, account scope, Trash-only effects |
 | Cleanup | Non-mutating preview, missing/forged/expired/replayed approval denied, frozen IDs |
@@ -20,6 +21,7 @@ not inferred coverage. README owns setup commands and manual Gmail prerequisites
 
 Use synthetic mail and fake transports; routine checks need no real account. Tests
 use the production migration on memory/disposable SQLite. Live integration requires
-an explicitly authorized test account and cannot be claimed from mock success.
+an explicitly authorized test account and cannot be claimed from mock success. Follow
+[the Gmail smoke test](../docs/GMAIL_SMOKE_TEST.md) and record evidence without private data.
 Doc changes need link/ownership/OKF checks, not another application harness. Broaden
 tests when failures, cross-module impact or security risk justify it.

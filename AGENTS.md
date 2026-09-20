@@ -1,6 +1,6 @@
 # InboxGuardian MCP — agent entry point
 
-Status: canonical routing; Phase 1 local foundation.
+Status: canonical routing; differential P0 on the local foundation.
 
 Mailbox analysis and sender-based cleanup through MCP. Gmail and synthetic mock
 providers share a provider-independent domain. Start here before changing code.

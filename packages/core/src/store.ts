@@ -5,6 +5,7 @@ export interface Store {
   savePreview(preview: CleanupPreview): void;
   preview(account: string, id: string): CleanupPreview;
   pending(account: string): CleanupPreview[];
+  confirmProtected(account: string, id: string, now: string): CleanupPreview;
   confirm(account: string, id: string, tokenHash: string, expiresAt: string, now: string): void;
   claim(account: string, id: string, tokenHash: string, now: string): CleanupPreview;
   cancelled(account: string, id: string): boolean;

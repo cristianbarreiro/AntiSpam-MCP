@@ -29,7 +29,8 @@ export type Signal =
   | "LIST"
   | "UNSUBSCRIBE"
   | "AUTOMATED"
-  | "TRANSACTION";
+  | "TRANSACTION"
+  | "STARRED";
 export interface MailMessage {
   id: MessageId;
   accountId: ProviderAccountId;
@@ -43,6 +44,7 @@ export interface MailMessage {
 export interface Page<T> {
   items: T[];
   cursor?: string;
+  resultSizeEstimate?: number;
 }
 export interface PageInput {
   limit: number;
@@ -62,6 +64,14 @@ export interface ClassificationResult {
   reasons: string[];
   source: "RULE_ENGINE" | "USER";
 }
+export interface MessageClassification {
+  messageId: MessageId;
+  classification: Classification;
+  confidence: number;
+  spamScore: number;
+  reasons: string[];
+  protections: ("IMPORTANT" | "TRANSACTIONAL" | "STARRED")[];
+}
 export interface SenderGroup {
   sender: MailSender;
   accountId: ProviderAccountId;
@@ -72,8 +82,26 @@ export interface SenderGroup {
   latestMessageAt: string;
   readStatus: "READ" | "UNREAD" | "MIXED";
   classification: ClassificationResult;
+  presentationClassification: Classification | "MIXED";
+  classificationBreakdown: Partial<Record<Classification, number>>;
   detectionEnabled: boolean;
   candidate: boolean;
+}
+export interface SenderNoiseMetric extends SenderGroup {
+  messagesLast7Days: number;
+  messagesLast30Days: number;
+  messagesLast90Days: number;
+  observableMessagesPer30Days: number;
+}
+export interface MailboxNoiseReport {
+  accountId: ProviderAccountId;
+  windowDays: 7 | 30 | 90;
+  sampledAt: string;
+  totalScanned: number;
+  totalInWindow: number;
+  complete: boolean;
+  coverage: string;
+  senders: SenderNoiseMetric[];
 }
 export interface SenderPolicy {
   sender: SenderAddress;
@@ -93,7 +121,7 @@ export type PreviewStatus =
 export interface CleanupPreview {
   id: string;
   accountId: ProviderAccountId;
-  sender: SenderAddress;
+  sender?: SenderAddress;
   messageIds: MessageId[];
   messageCount: number;
   unreadCount: number;
@@ -103,6 +131,37 @@ export interface CleanupPreview {
   createdAt: string;
   expiresAt: string;
   status: PreviewStatus;
+  items?: FrozenCleanupItem[];
+  senders?: CleanupSenderSummary[];
+  warnings?: string[];
+  requiresProtectedConfirmation?: boolean;
+  protectedConfirmedAt?: string;
+}
+export interface FrozenCleanupItem {
+  id: MessageId;
+  sender: SenderAddress;
+  classification: Classification;
+  protections: MessageClassification["protections"];
+  allowIgnored?: boolean;
+}
+export interface CleanupSenderSummary {
+  sender: SenderAddress;
+  messageCount: number;
+  unreadCount: number;
+  classificationBreakdown: Partial<Record<Classification, number>>;
+}
+export interface CleanupCriteria {
+  after?: string;
+  before?: string;
+  readState?: "READ" | "UNREAD";
+  classifications?: Classification[];
+  includeProtected?: ("IMPORTANT" | "TRANSACTIONAL" | "STARRED")[];
+  includeIgnored?: boolean;
+}
+export interface CleanupSelection {
+  sender: SenderAddress;
+  messageIds?: MessageId[];
+  criteria?: CleanupCriteria;
 }
 export interface CleanupConfirmation {
   token: string;
@@ -115,9 +174,18 @@ export interface CleanupResult {
   moved: number;
   failed: number;
   uncertain: number;
+  alreadyTrashed: number;
   remaining: number;
+  bySender: Array<{
+    sender: SenderAddress;
+    moved: number;
+    failed: number;
+    uncertain: number;
+    alreadyTrashed: number;
+    remaining: number;
+  }>;
 }
-export type Outcome = "MOVED" | "FAILED" | "UNCERTAIN";
+export type Outcome = "MOVED" | "FAILED" | "UNCERTAIN" | "ALREADY_TRASHED";
 export interface AuditEvent {
   id: number;
   timestamp: string;
@@ -128,6 +196,7 @@ export interface AuditEvent {
   result?: string;
 }
 export interface MailboxScanResult {
+  requestedLimit: number;
   scannedMessages: number;
   senderCount: number;
   complete: boolean;

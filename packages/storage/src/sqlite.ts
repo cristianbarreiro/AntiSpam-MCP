@@ -123,12 +123,32 @@ export class SqliteStore implements Store {
       .all(account)
       .map((r) => this.preview(account, String(r.id)));
   }
+  confirmProtected(account: string, id: string, now: string): CleanupPreview {
+    return this.transaction(() => {
+      const p = this.preview(account, id);
+      if (p.expiresAt <= now) throw new AppError("CONFIRMATION_EXPIRED");
+      if (p.status !== "PENDING" || !p.requiresProtectedConfirmation)
+        throw new AppError("VALIDATION_ERROR");
+      if (p.protectedConfirmedAt) throw new AppError("CONFIRMATION_ALREADY_USED");
+      const updated = { ...p, protectedConfirmedAt: now };
+      this.db
+        .prepare("UPDATE cleanup_previews SET data=? WHERE account=? AND id=?")
+        .run(JSON.stringify(updated), account, id);
+      this.audit(account, "PROTECTED_SCOPE_CONFIRMED", {
+        previewId: id,
+        count: p.messageCount,
+      });
+      return updated;
+    });
+  }
   confirm(account: string, id: string, hash: string, expiry: string, now: string) {
     this.transaction(() => {
       const p = this.preview(account, id);
       if (p.expiresAt <= now) throw new AppError("CONFIRMATION_EXPIRED");
       if (p.status === "CANCELLED") throw new AppError("CANCELLED");
       if (p.status !== "PENDING") throw new AppError("CONFIRMATION_ALREADY_USED");
+      if (p.requiresProtectedConfirmation && !p.protectedConfirmedAt)
+        throw new AppError("PROTECTED_CONFIRMATION_REQUIRED");
       this.db
         .prepare(
           "UPDATE cleanup_previews SET status='CONFIRMED',token_hash=?,token_expiry=? WHERE account=? AND id=?",
@@ -242,7 +262,7 @@ export class SqliteStore implements Store {
     this.transaction(() => {
       this.db
         .prepare(
-          "DELETE FROM cleanup_previews WHERE status NOT IN ('EXECUTING','UNCERTAIN') AND json_extract(data,'createdAt')<?",
+          "DELETE FROM cleanup_previews WHERE status NOT IN ('EXECUTING','UNCERTAIN') AND json_extract(data,'$.createdAt')<?",
         )
         .run(cutoff);
       this.db

@@ -1,5 +1,5 @@
-import { classify } from "./classification.js";
-import type { MailMessage, SenderGroup } from "./domain.js";
+import { classify, classifyMessage } from "./classification.js";
+import type { Classification, MailMessage, SenderGroup } from "./domain.js";
 export function aggregate(
   messages: readonly MailMessage[],
   enabled: (account: string, sender: string) => boolean,
@@ -20,6 +20,13 @@ export function aggregate(
     const unreadCount = group.filter((m) => m.unread).length;
     const detectionEnabled = enabled(first.accountId, first.sender.email);
     const classification = classify(group, detectionEnabled);
+    const classificationBreakdown: Partial<Record<Classification, number>> = {};
+    for (const message of group.map(classifyMessage))
+      classificationBreakdown[message.classification] =
+        (classificationBreakdown[message.classification] ?? 0) + 1;
+    const observedCategories = Object.keys(classificationBreakdown) as Classification[];
+    const presentationClassification =
+      observedCategories.length > 1 ? ("MIXED" as const) : (observedCategories[0] ?? "UNKNOWN");
     return {
       sender: last.sender,
       accountId: first.accountId,
@@ -35,11 +42,13 @@ export function aggregate(
             ? ("UNREAD" as const)
             : ("MIXED" as const),
       classification,
+      presentationClassification,
+      classificationBreakdown,
       detectionEnabled,
       candidate:
         detectionEnabled &&
-        ["SPAM", "SUSPECTED_SPAM", "PROMOTIONAL", "NEWSLETTER"].includes(
-          classification.classification,
+        ["SPAM", "SUSPECTED_SPAM", "PROMOTIONAL", "NEWSLETTER"].some(
+          (category) => (classificationBreakdown[category as Classification] ?? 0) > 0,
         ),
     };
   });

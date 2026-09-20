@@ -4,8 +4,9 @@ Inbox AntiSpam MCP analyzes mailbox metadata, groups messages by sender, explain
 deterministic classifications, and lets the mailbox owner review cleanup before
 moving an exact approved set of messages to Trash.
 
-**Status:** Phase 1 local foundation. The complete workflow runs with synthetic
-mail. Gmail is implemented behind the same provider interface, but requires OAuth
+**Status:** Differential P0 implemented on the local foundation. The synthetic flow
+includes observable noise reports, per-message classification, mixed sender groups,
+granular selection and one frozen multi-sender cleanup plan. Gmail requires OAuth
 credentials and has not been exercised against a real account in this repository.
 
 ## Safety model
@@ -18,6 +19,8 @@ credentials and has not been exercised against a real account in this repository
 - Cleanup moves messages to Trash. Permanent deletion is not implemented.
 - Per-message intent and outcomes are persisted before and after provider calls.
   Uncertain outcomes are inspected without automatically retrying the mutation.
+- Important, transactional and starred messages are excluded from new cleanup plans
+  by default. Including them requires a separate action in the human dashboard.
 
 See [.context/SECURITY.md](.context/SECURITY.md) for the complete boundary.
 
@@ -82,15 +85,23 @@ manual verification with an explicitly authorized test account.
 | `mailbox_scan` | READ | Read bounded metadata, cache summaries, and audit the scan |
 | `sender_list` | READ | Filter and page compact sender statistics |
 | `sender_messages` | READ | Fetch one bounded metadata page for a sender |
+| `sender_message_classifications` | READ | Explain message categories and protection flags |
+| `mailbox_noise_report` | READ | Report observable 7/30/90-day noise metrics and coverage |
 | `sender_set_detection` | WRITE | Persist the owner's DETECT/IGNORE preference |
 | `sender_cleanup_preview` | READ | Persist a non-mutating frozen preview |
+| `cleanup_plan_preview` | READ | Freeze one granular plan for up to 20 senders/1,000 IDs |
 | `sender_cleanup_execute` | SENSITIVE | Move only a human-approved preview to Trash |
+| `cleanup_plan_execute` | SENSITIVE | Execute the same approval contract with per-sender results |
 | `sender_cleanup_cancel` | WRITE | Invalidate approval or stop remaining work |
 | `audit_list` | READ | Read bounded local security-relevant audit events |
 
 MCP intentionally has no operation that creates a human confirmation. The owner
 approves in the local dashboard and either executes there or deliberately gives the
 short-lived token to the MCP client.
+
+Noise metrics describe the scanned window. When the scan is partial, the API and UI
+say so explicitly; Gmail `resultSizeEstimate` is never presented as an exact total.
+The original sender cleanup tools remain available for compatible clients.
 
 ## Architecture
 
@@ -124,3 +135,7 @@ Agents start at [AGENTS.md](AGENTS.md). Stable architecture and limits live in
   encrypted SQLite, background worker, or Outlook adapter.
 - Uncertain provider outcomes require manual inspection; reconciliation never retries
   a mailbox mutation.
+
+See [docs/EVOLUTION_AUDIT.md](docs/EVOLUTION_AUDIT.md) for the differential audit and
+[docs/GMAIL_SMOKE_TEST.md](docs/GMAIL_SMOKE_TEST.md) for the manual real-account
+validation that remains pending.

@@ -8,6 +8,7 @@ export type ErrorCode =
   | "CONFIRMATION_REQUIRED"
   | "CONFIRMATION_EXPIRED"
   | "CONFIRMATION_ALREADY_USED"
+  | "PROTECTED_CONFIRMATION_REQUIRED"
   | "MAILBOX_CHANGED"
   | "CANCELLED"
   | "SCAN_REQUIRED"
@@ -22,6 +23,8 @@ const messages: Record<ErrorCode, string> = {
   CONFIRMATION_REQUIRED: "Approve this preview in the local dashboard first.",
   CONFIRMATION_EXPIRED: "This preview or confirmation expired. Create a new preview.",
   CONFIRMATION_ALREADY_USED: "This confirmation has already been used.",
+  PROTECTED_CONFIRMATION_REQUIRED:
+    "Confirm the protected-message scope separately in the local dashboard.",
   MAILBOX_CHANGED: "The mailbox selection is incomplete or changed. Create a new preview.",
   CANCELLED: "This cleanup was cancelled.",
   SCAN_REQUIRED: "Scan the mailbox to refresh sender statistics.",

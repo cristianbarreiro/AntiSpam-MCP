@@ -12,11 +12,16 @@ import { loadConfig } from "./config.js";
 import { createDashboardServer } from "./http.js";
 import { createMcpServer } from "./mcp.js";
 
+let startupStage = "configuration";
+
 async function main() {
   const c = loadConfig();
+  startupStage = "database_open";
   const store = new SqliteStore(resolve(c.DATABASE_PATH));
+  startupStage = "database_maintenance";
   store.migrate();
   store.prune();
+  startupStage = "provider_connection";
   const provider =
     c.MAIL_PROVIDER === "mock"
       ? new MockProvider()
@@ -32,10 +37,12 @@ async function main() {
   const cleanup = new CleanupService(mailbox);
   const key = randomBytes(32).toString("hex");
   const server = createDashboardServer(mailbox, cleanup, key, resolve("apps/dashboard/dist"));
+  startupStage = "dashboard_listen";
   await new Promise<void>((ok, fail) => {
     server.once("error", fail);
     server.listen(c.PORT, "127.0.0.1", () => ok());
   });
+  startupStage = "ready";
   mkdirSync(".data", { recursive: true, mode: 0o700 });
   const keyPath = resolve(".data/dashboard-key.local");
   writeFileSync(keyPath, key, { mode: 0o600 });
@@ -68,6 +75,17 @@ async function main() {
   if (!process.argv.includes("--dashboard")) process.stdin.once("end", close);
 }
 main().catch((e) => {
-  process.stderr.write(`${JSON.stringify({ event: "startup_failed", ...safeError(e) })}\n`);
+  const systemCode =
+    typeof e === "object" && e !== null && "code" in e && typeof e.code === "string"
+      ? e.code
+      : undefined;
+  process.stderr.write(
+    `${JSON.stringify({
+      event: "startup_failed",
+      stage: startupStage,
+      ...safeError(e),
+      ...(systemCode ? { systemCode } : {}),
+    })}\n`,
+  );
   process.exit(1);
 });

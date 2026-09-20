@@ -46,7 +46,7 @@ describe("domain", () => {
   it("deduplicates and aggregates counts/dates while separating accounts and domain peers", () => {
     const m = syntheticMessages();
     const groups = aggregate([...m, required(m[0])], () => true);
-    expect(groups).toHaveLength(5);
+    expect(groups).toHaveLength(6);
     const g = required(groups.find((g) => g.sender.email === sender));
     expect(g).toMatchObject({
       messageCount: 36,
@@ -59,6 +59,21 @@ describe("domain", () => {
     expect(
       aggregate([required(m[0]), { ...required(m[0]), accountId: "other" }], () => true),
     ).toHaveLength(2);
+  });
+  it("exposes a mixed sender without hiding promotional messages behind protected ones", () => {
+    const mixed = required(
+      aggregate(syntheticMessages(), () => true).find(
+        (group) => group.sender.email === "shop@mixed.example",
+      ),
+    );
+    expect(mixed.presentationClassification).toBe("MIXED");
+    expect(mixed.classification.classification).toBe("IMPORTANT");
+    expect(mixed.classificationBreakdown).toMatchObject({
+      IMPORTANT: 1,
+      TRANSACTIONAL: 1,
+      PROMOTIONAL: 10,
+    });
+    expect(mixed.candidate).toBe(true);
   });
   it("uses deterministic evidence, protects important groups, and ignores no-reply or injected text alone", () => {
     const m = required(syntheticMessages()[0]);
@@ -84,6 +99,31 @@ describe("domain", () => {
   });
 });
 describe("policies and scans", () => {
+  it("reports observable windows and labels partial coverage honestly", async () => {
+    const now = Date.parse("2026-09-20T12:00:00.000Z");
+    const x = setup(undefined, () => now);
+    await x.mailbox.scan(10);
+    const report = x.mailbox.noiseReport(30, 100);
+    expect(report).toMatchObject({
+      windowDays: 30,
+      totalScanned: 10,
+      complete: false,
+      sampledAt: "2026-09-20T12:00:00.000Z",
+    });
+    expect(report.coverage).toContain("no representa el total");
+    expect(report.senders[0]?.messagesLast7Days).toBeGreaterThan(0);
+    expect(report.senders[0]?.observableMessagesPer30Days).toBeGreaterThan(0);
+  });
+
+  it("prunes expired previews using a valid SQLite JSON path", async () => {
+    const createdAt = Date.parse("2026-01-01T00:00:00.000Z");
+    const x = setup(undefined, () => createdAt);
+    const preview = await x.cleanup.preview(sender);
+
+    expect(() => x.store.prune(new Date(createdAt + 31 * 86400000))).not.toThrow();
+    expect(() => x.store.preview(mockAccount.id, preview.id)).toThrow();
+  });
+
   it("removes ignored candidates and restores detection immediately", async () => {
     const x = setup();
     await x.call("mailbox_scan", {});
@@ -136,6 +176,112 @@ describe("policies and scans", () => {
   });
 });
 describe("cleanup safety", () => {
+  it("creates one immutable multi-sender plan and excludes protected messages by default", async () => {
+    const x = setup();
+    const p = await x.cleanup.planPreview([
+      { sender: "shop@mixed.example", criteria: {} },
+      { sender: "noise@unknown.example", criteria: {} },
+    ]);
+    expect(p).toMatchObject({ messageCount: 16, requiresProtectedConfirmation: false });
+    expect(p.senders).toHaveLength(2);
+    expect(p.items?.some((item) => item.classification === "IMPORTANT")).toBe(false);
+    const extra = {
+      ...required(syntheticMessages().find((m) => m.sender.email === "noise@unknown.example")),
+      id: "new-after-plan",
+    };
+    x.provider.messages.set(extra.id, extra);
+    const confirmation = x.cleanup.confirmFromHuman(p.id);
+    const result = await x.cleanup.execute(p.id, confirmation.token);
+    expect(result).toMatchObject({ moved: 16, failed: 0, uncertain: 0, remaining: 0 });
+    expect(result.bySender).toHaveLength(2);
+    expect(x.provider.messages.get(extra.id)?.trashed).toBe(false);
+    await expect(x.cleanup.execute(p.id, confirmation.token)).rejects.toMatchObject({
+      code: "CONFIRMATION_ALREADY_USED",
+    });
+  });
+
+  it("filters granular selections by category and read state", async () => {
+    const x = setup();
+    const p = await x.cleanup.planPreview([
+      {
+        sender,
+        criteria: { classifications: ["PROMOTIONAL"], readState: "UNREAD" },
+      },
+    ]);
+    expect(p.messageCount).toBe(27);
+    expect(p.items?.every((item) => item.classification === "PROMOTIONAL")).toBe(true);
+    await expect(
+      x.cleanup.planPreview(
+        Array.from({ length: 21 }, (_, index) => ({
+          sender: `sender-${index}@example.test`,
+          criteria: {},
+        })),
+      ),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(
+      x.cleanup.planPreview([
+        {
+          sender,
+          messageIds: Array.from({ length: 1001 }, (_, index) => `message-${index}`),
+          criteria: {},
+        },
+      ]),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("stops a plan when a sender becomes ignored after preview", async () => {
+    const x = setup();
+    const p = await x.cleanup.planPreview([{ sender, messageIds: ["demo-1-3"], criteria: {} }]);
+    x.mailbox.setDetection(sender, false);
+    const confirmation = x.cleanup.confirmFromHuman(p.id);
+    expect(await x.cleanup.execute(p.id, confirmation.token)).toMatchObject({
+      moved: 0,
+      failed: 1,
+    });
+  });
+
+  it("requires an isolated human confirmation for protected scope", async () => {
+    const x = setup();
+    const p = await x.cleanup.planPreview([
+      {
+        sender: "shop@mixed.example",
+        messageIds: ["demo-mixed-0"],
+        criteria: { includeProtected: ["TRANSACTIONAL"] },
+      },
+    ]);
+    expect(p.requiresProtectedConfirmation).toBe(true);
+    expect(() => x.cleanup.confirmFromHuman(p.id)).toThrowError(
+      expect.objectContaining({ code: "PROTECTED_CONFIRMATION_REQUIRED" }),
+    );
+    expect(x.cleanup.confirmProtectedFromHuman(p.id).protectedConfirmedAt).toBeDefined();
+    const confirmation = x.cleanup.confirmFromHuman(p.id);
+    expect(await x.cleanup.execute(p.id, confirmation.token)).toMatchObject({ moved: 1 });
+  });
+
+  it("fails a frozen item that becomes protected and reports one already in Trash", async () => {
+    const x = setup();
+    const changed = await x.cleanup.planPreview([
+      { sender, messageIds: ["demo-1-1"], criteria: {} },
+    ]);
+    const changedToken = x.cleanup.confirmFromHuman(changed.id);
+    required(x.provider.messages.get("demo-1-1")).signals.push("IMPORTANT");
+    expect(await x.cleanup.execute(changed.id, changedToken.token)).toMatchObject({
+      moved: 0,
+      failed: 1,
+    });
+
+    const already = await x.cleanup.planPreview([
+      { sender, messageIds: ["demo-1-2"], criteria: {} },
+    ]);
+    const alreadyToken = x.cleanup.confirmFromHuman(already.id);
+    required(x.provider.messages.get("demo-1-2")).trashed = true;
+    expect(await x.cleanup.execute(already.id, alreadyToken.token)).toMatchObject({
+      moved: 0,
+      alreadyTrashed: 1,
+      failed: 0,
+    });
+  });
+
   it("previews without mutation, then executes only frozen IDs with a single-use human approval", async () => {
     const x = setup();
     const p = await x.cleanup.preview(sender);
@@ -261,6 +407,8 @@ it("runs the mock vertical slice through official MCP public contracts", async (
   await client.connect(right);
   try {
     expect((await client.listTools()).tools.map((t) => t.name)).not.toContain("confirm");
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("mailbox_noise_report");
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("cleanup_plan_preview");
     const scan = await client.callTool({ name: "mailbox_scan", arguments: { maxMessages: 1000 } });
     expect(scan.isError).not.toBe(true);
     expect((await client.callTool({ name: "sender_list", arguments: {} })).isError).not.toBe(true);

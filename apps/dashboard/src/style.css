@@ -137,6 +137,36 @@ p {
   font-size: 12px;
   color: #546243;
 }
+.coverage,
+.metadata-note {
+  font-size: 12px;
+  margin: -12px 2px 20px;
+}
+.warning {
+  color: #8a5521;
+  background: #fff7e5;
+  border-left: 3px solid #d69a3a;
+  padding: 9px 12px;
+}
+.selection-bar {
+  position: sticky;
+  top: 10px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: #173f35;
+  color: #fff;
+  border-radius: 10px;
+  padding: 13px 18px;
+  margin-bottom: 18px;
+  box-shadow: 0 8px 26px #173f3529;
+}
+.selection-bar span {
+  margin-right: auto;
+  font-size: 12px;
+}
 .stats {
   display: grid;
   grid-template-columns: 1fr 1fr 1.3fr 1fr;
@@ -340,6 +370,10 @@ td:last-child {
   background: #e4f0e6;
   color: #417953;
 }
+.badge.mixed {
+  background: #eee7f8;
+  color: #6d5192;
+}
 .badge.spam,
 .badge.suspected_spam {
   background: #fae8e2;
@@ -417,6 +451,12 @@ td:last-child {
   justify-content: space-between;
   gap: 20px;
   font-size: 12px;
+}
+.message.selectable {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  align-items: center;
+  cursor: pointer;
 }
 .message span:last-child {
   font-size: 10px;
@@ -511,6 +551,18 @@ footer {
   font-size: 12px;
   color: #83907d;
 }
+.preview-sender {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf0eb;
+  font-size: 12px;
+}
+.preview-sender span {
+  color: #6f7e73;
+  text-align: right;
+}
 .modal p {
   font-size: 13px;
 }
@@ -593,6 +645,23 @@ footer {
   .message {
     flex-direction: column;
     gap: 5px;
+  }
+  .message.selectable {
+    grid-template-columns: auto 1fr;
+  }
+  .message.selectable span:last-child {
+    grid-column: 2;
+    white-space: normal;
+  }
+  .selection-bar {
+    top: 4px;
+  }
+  .preview-sender {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .preview-sender span {
+    text-align: left;
   }
   .pending-item {
     align-items: flex-start;

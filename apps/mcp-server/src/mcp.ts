@@ -15,7 +15,8 @@ export function createMcpServer(mailbox: MailboxService, cleanup: CleanupService
         inputSchema: schemas[name],
         annotations: {
           readOnlyHint:
-            d.kind === "READ" && !["mailbox_scan", "sender_cleanup_preview"].includes(name),
+            d.kind === "READ" &&
+            !["mailbox_scan", "sender_cleanup_preview", "cleanup_plan_preview"].includes(name),
           destructiveHint: d.kind === "SENSITIVE",
           openWorldHint: true,
         },

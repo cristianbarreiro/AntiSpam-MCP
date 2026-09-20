@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { aggregate } from "./aggregation.js";
+import { classifyMessage } from "./classification.js";
 import type {
   Classification,
   MailAccount,
+  MailboxNoiseReport,
   MailboxScanResult,
   MailMessage,
   MailProvider,
@@ -59,6 +61,7 @@ export class MailboxService {
       classificationSummary[g.classification.classification] =
         (classificationSummary[g.classification.classification] ?? 0) + 1;
     const summary = {
+      requestedLimit: maxMessages,
       scannedMessages: messages.length,
       senderCount: groups.length,
       complete,
@@ -80,12 +83,15 @@ export class MailboxService {
     limit: number;
     offset: number;
     candidatesOnly: boolean;
+    activeWithinDays?: 7 | 30 | 90;
   }) {
     if (!this.cache || this.cache.expires < this.now()) throw new AppError("SCAN_REQUIRED");
     let groups = this.groups(this.cache.messages).filter(
       (g) =>
         (input.includeIgnored || g.detectionEnabled) &&
-        (!input.classification || g.classification.classification === input.classification) &&
+        (!input.classification || (g.classificationBreakdown[input.classification] ?? 0) > 0) &&
+        (!input.activeWithinDays ||
+          Date.parse(g.latestMessageAt) >= this.now() - input.activeWithinDays * 86400000) &&
         g.messageCount >= input.minimumMessages &&
         (!input.candidatesOnly || g.candidate),
     );
@@ -126,8 +132,60 @@ export class MailboxService {
     return {
       items: page.items
         .filter((m) => !m.trashed && m.sender.email === sender)
-        .map((m) => ({ id: m.id, subject: m.subject, date: m.date, unread: m.unread })),
+        .map((m) => ({
+          id: m.id,
+          subject: m.subject,
+          date: m.date,
+          unread: m.unread,
+          classification: classifyMessage(m),
+        })),
       ...(next ? { cursor: next } : {}),
+    };
+  }
+  noiseReport(windowDays: 7 | 30 | 90, limit: number): MailboxNoiseReport {
+    if (!this.cache || this.cache.expires < this.now()) throw new AppError("SCAN_REQUIRED");
+    const sampledAt = new Date(this.now()).toISOString();
+    const cutoff = this.now() - windowDays * 86400000;
+    const recentCutoff = (days: number) => this.now() - days * 86400000;
+    const inWindow = this.cache.messages.filter((message) => Date.parse(message.date) >= cutoff);
+    const senders = this.groups(inWindow)
+      .map((group) => {
+        const senderMessages =
+          this.cache?.messages.filter((message) => message.sender.email === group.sender.email) ??
+          [];
+        const spanDays = Math.max(
+          1,
+          (Date.parse(group.latestMessageAt) - Date.parse(group.oldestMessageAt)) / 86400000 + 1,
+        );
+        return {
+          ...group,
+          messagesLast7Days: senderMessages.filter(
+            (message) => Date.parse(message.date) >= recentCutoff(7),
+          ).length,
+          messagesLast30Days: senderMessages.filter(
+            (message) => Date.parse(message.date) >= recentCutoff(30),
+          ).length,
+          messagesLast90Days: senderMessages.filter(
+            (message) => Date.parse(message.date) >= recentCutoff(90),
+          ).length,
+          observableMessagesPer30Days: Number(((group.messageCount / spanDays) * 30).toFixed(1)),
+        };
+      })
+      .sort(
+        (a, b) => b.messageCount - a.messageCount || a.sender.email.localeCompare(b.sender.email),
+      )
+      .slice(0, limit);
+    return {
+      accountId: this.account.id,
+      windowDays,
+      sampledAt,
+      totalScanned: this.cache.messages.length,
+      totalInWindow: inWindow.length,
+      complete: this.cache.summary.complete,
+      coverage: this.cache.summary.complete
+        ? "Ventana completa del buzón según el proveedor."
+        : `Muestra parcial: se analizaron ${this.cache.summary.scannedMessages} mensajes de un máximo solicitado de ${this.cache.summary.requestedLimit}; no representa el total de la cuenta.`,
+      senders,
     };
   }
   setDetection(senderInput: string, detectionEnabled: boolean) {
