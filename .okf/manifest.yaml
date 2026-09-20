@@ -1,0 +1,21 @@
+# Repository-local retrieval profile; paths are relative to repository root.
+format: inboxguardian-context-index
+version: 1
+entrypoint: AGENTS.md
+owners:
+  project: README.md
+  decisions: .context/DECISIONS.md
+  product: .context/PRODUCT.md
+  architecture: .context/ARCHITECTURE.md
+  security: .context/SECURITY.md
+  domain: .context/DOMAIN.md
+  mcp: .context/MCP.md
+  data: .context/DATA.md
+  development: .context/DEVELOPMENT.md
+  testing: .context/TESTING.md
+routes:
+  mcp: .skills/mcp-tool-design/SKILL.md
+  mutation: .skills/destructive-action-safety/SKILL.md
+  validation: .skills/testing/SKILL.md
+  broad_audit: .skills/repository-audit/SKILL.md
+  documentation: .skills/documentation-maintenance/SKILL.md

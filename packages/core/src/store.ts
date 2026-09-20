@@ -12,6 +12,10 @@ export interface Store {
   recordOutcome(account: string, id: string, messageId: string, outcome: Outcome): void;
   outcomes(account: string, id: string): Record<string, Outcome>;
   finish(account: string, id: string, status: PreviewStatus): void;
-  audit(account: string, action: string, details?: { previewId?: string; count?: number; result?: string }): void;
+  audit(
+    account: string,
+    action: string,
+    details?: { previewId?: string; count?: number; result?: string },
+  ): void;
   audits(account: string, limit: number): AuditEvent[];
 }

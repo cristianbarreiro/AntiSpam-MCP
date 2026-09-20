@@ -1,1 +1,11 @@
-{ "name": "@inboxguardian/server", "version": "0.1.0", "private": true, "type": "module", "dependencies": { "@inboxguardian/core": "workspace:*", "@inboxguardian/providers": "workspace:*", "@inboxguardian/storage": "workspace:*" } }
+{
+  "name": "@inboxguardian/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@inboxguardian/core": "workspace:*",
+    "@inboxguardian/providers": "workspace:*",
+    "@inboxguardian/storage": "workspace:*"
+  }
+}

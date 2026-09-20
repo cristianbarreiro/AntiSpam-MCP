@@ -97,3 +97,10 @@ temp/
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+
+# InboxGuardian private runtime files
+credentials/
+secrets/
+tokens/
+*.local
+mailbox-exports/
