@@ -31,8 +31,11 @@ const messages: Record<ErrorCode, string> = {
   INTERNAL_ERROR: "An internal operation failed. No automatic retry was attempted.",
 };
 export class AppError extends Error {
-  constructor(public readonly code: ErrorCode) {
-    super(messages[code]);
+  constructor(
+    public readonly code: ErrorCode,
+    message = messages[code],
+  ) {
+    super(message);
     this.name = "AppError";
   }
 }

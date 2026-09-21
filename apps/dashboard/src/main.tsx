@@ -293,15 +293,17 @@ function App() {
   return (
     <>
       <header>
-        <a className="brand" href="/">
-          <span className="mark">IG</span>InboxGuardian
-        </a>
-        <div className="header-meta">
-          <span className="dot" />
-          {account ? `${account.provider.toUpperCase()} · ${account.email}` : "ESPACIO LOCAL"}
+        <div className="header-inner">
+          <a className="brand" href="/">
+            <span className="mark">IG</span>InboxGuardian
+          </a>
+          <div className="header-meta">
+            <span className="dot" />
+            {account ? `${account.provider.toUpperCase()} · ${account.email}` : "ESPACIO LOCAL"}
+          </div>
         </div>
       </header>
-      <main>
+      <main className={account ? undefined : "login-shell"}>
         <div className="eyebrow">INTELIGENCIA LOCAL SOBRE RUIDO</div>
         <div className="hero">
           <div>

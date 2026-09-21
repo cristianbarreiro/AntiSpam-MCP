@@ -55,6 +55,31 @@ export function mapGmailMessage(raw: unknown, accountId: string): MailMessage {
 export interface GmailTransport {
   request(path: string, method?: "GET" | "POST"): Promise<unknown>;
 }
+export function mapGmailForbidden(payload: unknown): AppError {
+  const parsed = z
+    .object({
+      error: z.object({
+        errors: z.array(z.object({ reason: z.string() })).optional(),
+      }),
+    })
+    .safeParse(payload);
+  const reasons = parsed.success
+    ? (parsed.data.error.errors?.map((error) => error.reason) ?? [])
+    : [];
+  if (reasons.some((reason) => ["rateLimitExceeded", "userRateLimitExceeded"].includes(reason)))
+    return new AppError("RATE_LIMITED");
+  if (reasons.includes("insufficientPermissions"))
+    return new AppError(
+      "PERMISSION_DENIED",
+      "Gmail authorization lacks the required permission. Run pnpm auth:gmail again and replace the refresh-token file.",
+    );
+  if (reasons.includes("accessNotConfigured"))
+    return new AppError(
+      "PERMISSION_DENIED",
+      "The Gmail API is not enabled for the Google Cloud project used by GOOGLE_CLIENT_ID.",
+    );
+  return new AppError("PERMISSION_DENIED");
+}
 export function gmailTransport(
   clientId: string,
   clientSecret: string,
@@ -92,19 +117,7 @@ export function gmailTransport(
         if (response.status === 429) throw new AppError("RATE_LIMITED");
         if (response.status === 403) {
           const payload: unknown = await response.json().catch(() => null);
-          const rate = z
-            .object({
-              error: z.object({ errors: z.array(z.object({ reason: z.string() })).optional() }),
-            })
-            .safeParse(payload);
-          if (
-            rate.success &&
-            rate.data.error.errors?.some((e) =>
-              ["rateLimitExceeded", "userRateLimitExceeded"].includes(e.reason),
-            )
-          )
-            throw new AppError("RATE_LIMITED");
-          throw new AppError("PERMISSION_DENIED");
+          throw mapGmailForbidden(payload);
         }
         if (response.status === 404) throw new AppError("NOT_FOUND");
         throw new AppError("PROVIDER_ERROR");

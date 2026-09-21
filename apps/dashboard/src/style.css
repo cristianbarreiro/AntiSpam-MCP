@@ -47,10 +47,14 @@ header {
   height: 86px;
   background: #fff;
   border-bottom: 1px solid #e1e7e2;
+}
+.header-inner {
+  width: min(90%, 1440px);
+  height: 100%;
+  margin: 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 5%;
   gap: 20px;
 }
 .brand {
@@ -90,6 +94,13 @@ main {
   margin: auto;
   padding: 48px 5% 20px;
 }
+.login-shell {
+  max-width: 1040px;
+  min-height: calc(100vh - 86px);
+  padding: 64px 32px 24px;
+  display: flex;
+  flex-direction: column;
+}
 .eyebrow {
   font-size: 10px;
   letter-spacing: 2px;
@@ -117,6 +128,7 @@ p {
 }
 .hero p {
   font-size: 16px;
+  margin-bottom: 0;
 }
 .safety-tag {
   font-size: 12px;
@@ -507,6 +519,25 @@ footer {
   letter-spacing: 0.5px;
   padding: 30px;
 }
+.login-shell .eyebrow {
+  text-align: center;
+}
+.login-shell .hero {
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+  gap: 18px;
+  margin-bottom: 0;
+}
+.login-shell .login {
+  width: min(100%, 620px);
+  max-width: 620px;
+  margin: 52px auto 0;
+  box-sizing: border-box;
+}
+.login-shell footer {
+  margin-top: auto;
+}
 .overlay {
   position: fixed;
   inset: 0;
@@ -604,14 +635,25 @@ footer {
 }
 @media (max-width: 760px) {
   header {
-    padding: 18px;
     height: auto;
+  }
+  .header-inner {
+    width: 100%;
+    padding: 18px;
+    box-sizing: border-box;
     align-items: flex-start;
     flex-direction: column;
     gap: 12px;
   }
   main {
     padding: 28px 18px;
+  }
+  .login-shell {
+    min-height: calc(100vh - 115px);
+    padding-top: 42px;
+  }
+  .login-shell .login {
+    margin-top: 36px;
   }
   .hero {
     display: block;

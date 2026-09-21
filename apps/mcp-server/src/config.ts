@@ -17,18 +17,29 @@ const schema = z.object({
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (env === process.env) dotenv({ quiet: true });
   const parsed = schema.safeParse(env);
-  if (!parsed.success) throw new AppError("VALIDATION_ERROR");
+  if (!parsed.success) throw new AppError("VALIDATION_ERROR", "Invalid server configuration.");
   const c = parsed.data;
   if (c.MAIL_PROVIDER === "gmail") {
     if (c.GOOGLE_TOKEN_FILE && !c.GOOGLE_REFRESH_TOKEN) {
       try {
         c.GOOGLE_REFRESH_TOKEN = readFileSync(c.GOOGLE_TOKEN_FILE, "utf8").trim();
       } catch {
-        throw new AppError("AUTHENTICATION_ERROR");
+        throw new AppError(
+          "AUTHENTICATION_ERROR",
+          "GOOGLE_TOKEN_FILE must point to a readable refresh-token file. Run pnpm auth:gmail or set GOOGLE_REFRESH_TOKEN.",
+        );
       }
     }
-    if (!c.GOOGLE_CLIENT_ID || !c.GOOGLE_CLIENT_SECRET || !c.GOOGLE_REFRESH_TOKEN)
-      throw new AppError("AUTHENTICATION_ERROR");
+    if (!c.GOOGLE_CLIENT_ID || !c.GOOGLE_CLIENT_SECRET)
+      throw new AppError(
+        "AUTHENTICATION_ERROR",
+        "Gmail requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET. Set them in .env.",
+      );
+    if (!c.GOOGLE_REFRESH_TOKEN)
+      throw new AppError(
+        "AUTHENTICATION_ERROR",
+        "Gmail requires GOOGLE_REFRESH_TOKEN or GOOGLE_TOKEN_FILE. Run pnpm auth:gmail and set GOOGLE_TOKEN_FILE to the generated file.",
+      );
   }
   return c;
 }

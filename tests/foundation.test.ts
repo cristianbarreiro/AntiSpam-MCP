@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -94,8 +94,48 @@ describe("domain", () => {
     expect(classify(input)).toEqual(classify(input));
   });
   it("starts in mock mode without OAuth settings and rejects incomplete Gmail config", () => {
-    expect(loadConfig({ MAIL_PROVIDER: "mock" }).MAIL_PROVIDER).toBe("mock");
-    expect(() => loadConfig({ MAIL_PROVIDER: "gmail" })).toThrow();
+    expect(
+      loadConfig({
+        MAIL_PROVIDER: "mock",
+        GOOGLE_CLIENT_ID: "not-used",
+        GOOGLE_CLIENT_SECRET: "not-used",
+        GOOGLE_TOKEN_FILE: "missing-token-file",
+      }).MAIL_PROVIDER,
+    ).toBe("mock");
+    expect(() => loadConfig({ MAIL_PROVIDER: "gmail" })).toThrow(
+      "Gmail requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET",
+    );
+  });
+  it("loads a Gmail refresh token from the file produced by auth:gmail", () => {
+    const directory = mkdtempSync(join(tmpdir(), "inboxguardian-auth-test-"));
+    const tokenPath = join(directory, "google-refresh-token.local");
+    writeFileSync(tokenPath, "refresh-token-for-test\n");
+    try {
+      expect(
+        loadConfig({
+          MAIL_PROVIDER: "gmail",
+          GOOGLE_CLIENT_ID: "client-id",
+          GOOGLE_CLIENT_SECRET: "client-secret",
+          GOOGLE_TOKEN_FILE: tokenPath,
+        }),
+      ).toMatchObject({
+        MAIL_PROVIDER: "gmail",
+        GOOGLE_REFRESH_TOKEN: "refresh-token-for-test",
+      });
+    } finally {
+      expect(readFileSync(tokenPath, "utf8")).toBe("refresh-token-for-test\n");
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  it("reports an invalid Gmail token path without exposing its value", () => {
+    expect(() =>
+      loadConfig({
+        MAIL_PROVIDER: "gmail",
+        GOOGLE_CLIENT_ID: "client-id",
+        GOOGLE_CLIENT_SECRET: "client-secret",
+        GOOGLE_TOKEN_FILE: "missing-token-file",
+      }),
+    ).toThrow("GOOGLE_TOKEN_FILE must point to a readable refresh-token file");
   });
 });
 describe("policies and scans", () => {

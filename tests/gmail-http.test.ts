@@ -7,6 +7,7 @@ import { MailboxService } from "../packages/core/src/mailbox.js";
 import {
   GmailProvider,
   type GmailTransport,
+  mapGmailForbidden,
   mapGmailMessage,
 } from "../packages/providers/src/gmail.js";
 import { MockProvider, mockAccount } from "../packages/providers/src/mock.js";
@@ -84,6 +85,20 @@ it("backs off bounded idempotent reads but never retries a Trash mutation", asyn
   expect(reads).toBe(2);
   await expect(provider.moveToTrash("abc")).rejects.toThrow("uncertain mutation");
   expect(mutations).toBe(1);
+});
+it("explains known Gmail permission failures without exposing the provider response", async () => {
+  expect(
+    mapGmailForbidden({ error: { errors: [{ reason: "insufficientPermissions" }] } }),
+  ).toMatchObject({
+    code: "PERMISSION_DENIED",
+    message: expect.stringContaining("Gmail authorization lacks the required permission"),
+  });
+  expect(
+    mapGmailForbidden({ error: { errors: [{ reason: "accessNotConfigured" }] } }),
+  ).toMatchObject({ message: expect.stringContaining("Gmail API is not enabled") });
+  expect(mapGmailForbidden({ error: { errors: [{ reason: "unknown" }] } })).toMatchObject({
+    message: "This action is not authorized.",
+  });
 });
 let server: Server | undefined;
 let store: SqliteStore | undefined;
