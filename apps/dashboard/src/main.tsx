@@ -1,12 +1,14 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   Classification,
   CleanupPreview,
   CleanupResult,
+  DashboardJobStatus,
+  DashboardMessage,
+  DashboardSnapshot,
   MailAccount,
   MailboxNoiseReport,
-  MessageClassification,
   SenderGroup,
 } from "../../../packages/core/src/domain.js";
 import { classifications } from "../../../packages/core/src/domain.js";
@@ -28,13 +30,7 @@ const categoryNames: Record<Classification | "MIXED", string> = {
   UNKNOWN: "Sin clasificar",
   MIXED: "Mixto",
 };
-type Message = {
-  id: string;
-  subject: string;
-  date: string;
-  unread: boolean;
-  classification: MessageClassification;
-};
+type Message = DashboardMessage;
 type Listing = {
   items: SenderGroup[];
   total: number;
@@ -54,38 +50,117 @@ async function api<T>(path: string, input: unknown = {}): Promise<T> {
 const formatDate = (value: string) =>
   new Intl.DateTimeFormat("es-UY", { dateStyle: "medium" }).format(new Date(value));
 
+const stageNames: Record<DashboardJobStatus["stage"], string> = {
+  idle: "Esperando",
+  connecting: "Conectando con tu buzón",
+  restoring_cache: "Recuperando la vista guardada",
+  fetching: "Leyendo metadatos",
+  processing: "Organizando mensajes",
+  classifying: "Clasificando remitentes",
+  persisting: "Guardando una copia local",
+  preparing_view: "Preparando filtros y vista",
+  ready: "Listo",
+  refreshing: "Actualizando datos",
+  error: "No se pudo completar",
+  cancelled: "Carga cancelada",
+};
+
+function listingFromSnapshot(
+  snapshot: DashboardSnapshot,
+  input: {
+    category: string;
+    includeIgnored: boolean;
+    candidatesOnly: boolean;
+    sort: string;
+    windowDays: 7 | 30 | 90;
+    offset: number;
+  },
+): Listing {
+  const cutoff = Date.now() - input.windowDays * 86400000;
+  const items = snapshot.groups
+    .filter(
+      (group) =>
+        (input.includeIgnored || group.detectionEnabled) &&
+        (!input.category ||
+          (group.classificationBreakdown[input.category as Classification] ?? 0) > 0) &&
+        Date.parse(group.latestMessageAt) >= cutoff &&
+        (!input.candidatesOnly || group.candidate),
+    )
+    .sort(
+      (a, b) =>
+        (input.sort === "LATEST"
+          ? b.latestMessageAt.localeCompare(a.latestMessageAt)
+          : b.messageCount - a.messageCount) || a.sender.email.localeCompare(b.sender.email),
+    );
+  return {
+    items: items.slice(input.offset, input.offset + 20),
+    total: items.length,
+    scan: snapshot.scan,
+  };
+}
+
+function LoadingScreen({ status, onRetry }: { status?: DashboardJobStatus; onRetry: () => void }) {
+  const determinate = status?.percent !== null && status?.percent !== undefined;
+  return (
+    <section className="loading-panel" aria-labelledby="loading-title">
+      <span className="loading-mark" aria-hidden="true">
+        IG
+      </span>
+      <div>
+        <span className="eyebrow">PREPARANDO TU ESPACIO LOCAL</span>
+        <h2 id="loading-title">Preparando tu bandeja</h2>
+        <p>Estamos analizando tus mensajes y organizando tus remitentes.</p>
+      </div>
+      <div
+        className={`progress-track ${determinate ? "" : "indeterminate"}`}
+        role="progressbar"
+        aria-label="Progreso de preparación"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        {...(determinate ? { "aria-valuenow": status?.percent ?? 0 } : {})}
+      >
+        <span
+          className={determinate ? undefined : "progress-indeterminate"}
+          style={determinate ? { width: `${status?.percent ?? 0}%` } : undefined}
+        />
+      </div>
+      <div className="loading-status" aria-live="polite">
+        <strong>{stageNames[status?.stage ?? "connecting"]}</strong>
+        <span>
+          {determinate
+            ? `${status?.percent}%`
+            : status?.processed
+              ? `${status.processed} mensajes procesados`
+              : "Calculando el alcance real…"}
+        </span>
+      </div>
+      {status?.coverage === "partial" && (
+        <p className="coverage warning">
+          El progreso corresponde a la muestra seleccionada, no a todo el buzón.
+        </p>
+      )}
+      {status?.error && (
+        <div className="feedback error" role="alert">
+          <p>{status.error.message}</p>
+          <button type="button" onClick={onRetry}>
+            Reintentar
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SenderDetails({
-  sender,
+  items,
   selected,
   onSelection,
 }: {
-  sender: string;
+  items: Message[];
   selected: Set<string>;
   onSelection: (ids: Set<string>) => void;
 }) {
-  const [items, setItems] = useState<Message[]>([]);
-  const [cursor, setCursor] = useState<string>();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  async function load(next?: string) {
-    setLoading(true);
-    setError("");
-    try {
-      const page = await api<{ items: Message[]; cursor?: string }>(
-        "tools/sender_message_classifications",
-        { sender, limit: 25, ...(next ? { cursor: next } : {}) },
-      );
-      setItems((old) => (next ? [...old, ...page.items] : page.items));
-      setCursor(page.cursor);
-    } catch (cause) {
-      setError((cause as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => {
-    void load();
-  }, []);
+  const [visible, setVisible] = useState(25);
   function toggle(id: string) {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
@@ -98,8 +173,7 @@ function SenderDetails({
       <p className="muted">
         Los asuntos son datos no confiables. No se descargan cuerpos ni adjuntos.
       </p>
-      {error && <p role="alert">{error}</p>}
-      {items.map((message) => (
+      {items.slice(0, visible).map((message) => (
         <label className="message selectable" key={message.id}>
           <input
             type="checkbox"
@@ -122,13 +196,12 @@ function SenderDetails({
         Los mensajes protegidos no se seleccionan aquí. “Vista completa” permite revisarlos con una
         confirmación humana adicional.
       </p>
-      {!loading && !items.length && !error && <p>No hay mensajes en esta página.</p>}
-      {cursor && (
-        <button type="button" disabled={loading} onClick={() => void load(cursor)}>
+      {!items.length && <p>No hay mensajes en esta muestra.</p>}
+      {visible < items.length && (
+        <button type="button" onClick={() => setVisible((current) => current + 25)}>
           Cargar más mensajes
         </button>
       )}
-      {loading && <p role="status">Cargando metadatos…</p>}
     </div>
   );
 }
@@ -136,6 +209,8 @@ function SenderDetails({
 function App() {
   const [account, setAccount] = useState<MailAccount>();
   const [key, setKey] = useState("");
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot>();
+  const [jobStatus, setJobStatus] = useState<DashboardJobStatus>();
   const [list, setList] = useState<Listing>();
   const [report, setReport] = useState<MailboxNoiseReport>();
   const [busy, setBusy] = useState(false);
@@ -153,6 +228,17 @@ function App() {
   const [approvedToken, setApprovedToken] = useState("");
   const [selectedSenders, setSelectedSenders] = useState<Set<string>>(new Set());
   const [selectedMessages, setSelectedMessages] = useState<Record<string, Set<string>>>({});
+  const messagesBySender = useMemo(() => {
+    const grouped = new Map<string, DashboardMessage[]>();
+    for (const message of snapshot?.messages ?? []) {
+      const items = grouped.get(message.sender.email) ?? [];
+      items.push(message);
+      grouped.set(message.sender.email, items);
+    }
+    for (const items of grouped.values())
+      items.sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
+    return grouped;
+  }, [snapshot]);
   const estimatedSelected = useMemo(
     () =>
       [...selectedSenders].reduce((total, sender) => {
@@ -178,29 +264,59 @@ function App() {
       setBusy(false);
     }
   }
-  async function refresh(next = offset) {
-    const [listing, noise] = await Promise.all([
-      api<Listing>("tools/sender_list", {
+  function refresh(next = offset, source = snapshot) {
+    if (!source) return;
+    setList(
+      listingFromSnapshot(source, {
+        category,
         includeIgnored: ignored,
         candidatesOnly: candidates,
-        sortBy: sort,
-        limit: 20,
+        sort,
+        windowDays,
         offset: next,
-        activeWithinDays: windowDays,
-        ...(category ? { classification: category } : {}),
       }),
-      api<MailboxNoiseReport>("tools/mailbox_noise_report", { windowDays, limit: 100 }),
-    ]);
-    setList(listing);
-    setReport(noise);
+    );
+    setReport(source.reports[String(windowDays) as "7" | "30" | "90"]);
     setOffset(next);
   }
-  async function scan() {
-    await api("tools/mailbox_scan", { maxMessages: 1000 });
-    await refresh(0);
-    setExpanded(undefined);
-    setSelectedSenders(new Set());
-    setSelectedMessages({});
+  async function hydrateDashboard() {
+    const view = await api<{ snapshot: DashboardSnapshot; pending: CleanupPreview[] }>(
+      "dashboard/snapshot",
+    );
+    setSnapshot(view.snapshot);
+    setPending(view.pending);
+    refresh(0, view.snapshot);
+  }
+  async function initializeDashboard(force = false, background = false) {
+    try {
+      let status = await api<DashboardJobStatus>("dashboard/start", {
+        maxMessages: 1000,
+        force,
+      });
+      setJobStatus(status);
+      if (status.ready) await hydrateDashboard();
+      if (!force && status.stage === "ready" && status.source === "cache") {
+        void initializeDashboard(true, true);
+        return;
+      }
+      while (status.stage !== "ready" && status.stage !== "error" && status.stage !== "cancelled") {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        status = await api<DashboardJobStatus>("dashboard/status");
+        setJobStatus(status);
+      }
+      if (status.stage === "ready") {
+        await hydrateDashboard();
+        if (!background) {
+          setExpanded(undefined);
+          setSelectedSenders(new Set());
+          setSelectedMessages({});
+        }
+      } else if (status.error) {
+        setError(status.error.message);
+      }
+    } catch (cause) {
+      setError((cause as Error).message);
+    }
   }
   async function login(event: FormEvent) {
     event.preventDefault();
@@ -209,6 +325,7 @@ function App() {
       const session = await api<{ account: MailAccount }>("session");
       setAccount(session.account);
       setKey("");
+      void initializeDashboard();
     });
   }
   async function review(sender: string) {
@@ -250,14 +367,17 @@ function App() {
       });
       setPreview(undefined);
       setPending([]);
+      setSnapshot(undefined);
+      setJobStatus(undefined);
       setList(undefined);
       setReport(undefined);
       setExpanded(undefined);
       setSelectedSenders(new Set());
       setSelectedMessages({});
       setNotice(
-        `${result.moved} movidos, ${result.alreadyTrashed} ya estaban en Papelera, ${result.failed} fallaron, ${result.uncertain} inciertos y ${result.remaining} pendientes. Escaneá de nuevo para actualizar la vista.`,
+        `${result.moved} movidos, ${result.alreadyTrashed} ya estaban en Papelera, ${result.failed} fallaron, ${result.uncertain} inciertos y ${result.remaining} pendientes. La vista se está actualizando.`,
       );
+      void initializeDashboard(true, false);
     });
   }
   async function cancel() {
@@ -289,6 +409,10 @@ function App() {
     setSelectedSenders(nextSenders);
     setSelectedMessages((current) => ({ ...current, [sender]: ids }));
   }
+  const refreshing = Boolean(
+    snapshot && jobStatus && !["ready", "error", "cancelled"].includes(jobStatus.stage),
+  );
+  const interactionLocked = busy || refreshing;
 
   return (
     <>
@@ -335,6 +459,8 @@ function App() {
               </button>
             </form>
           </section>
+        ) : !snapshot ? (
+          <LoadingScreen status={jobStatus} onRetry={() => void initializeDashboard(true, false)} />
         ) : (
           <>
             {account.provider === "mock" && (
@@ -362,10 +488,10 @@ function App() {
                 <button
                   type="button"
                   className="primary"
-                  disabled={busy}
-                  onClick={() => void task(scan)}
+                  disabled={busy || refreshing}
+                  onClick={() => void initializeDashboard(true, false)}
                 >
-                  {busy ? "Procesando…" : "Escanear buzón"}
+                  {refreshing ? "Actualizando datos…" : "Actualizar buzón"}
                 </button>
               </div>
             </section>
@@ -384,14 +510,14 @@ function App() {
                 <button
                   type="button"
                   className="primary"
-                  disabled={busy}
+                  disabled={interactionLocked}
                   onClick={() => void preparePlan()}
                 >
                   Preparar plan único
                 </button>
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={interactionLocked}
                   onClick={() => {
                     setSelectedSenders(new Set());
                     setSelectedMessages({});
@@ -421,7 +547,7 @@ function App() {
                 className="filters"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void task(() => refresh(0));
+                  refresh(0);
                 }}
               >
                 <label>
@@ -469,7 +595,7 @@ function App() {
                   />
                   Incluir ignorados
                 </label>
-                <button type="submit" disabled={busy || !list}>
+                <button type="submit" disabled={!list}>
                   Aplicar filtros
                 </button>
               </form>
@@ -510,7 +636,8 @@ function App() {
                           expanded={expanded === group.sender.email}
                           selected={selectedSenders.has(group.sender.email)}
                           selectedMessages={selectedMessages[group.sender.email] ?? new Set()}
-                          busy={busy}
+                          messages={messagesBySender.get(group.sender.email) ?? []}
+                          busy={interactionLocked}
                           expand={() =>
                             setExpanded(
                               expanded === group.sender.email ? undefined : group.sender.email,
@@ -524,7 +651,7 @@ function App() {
                                 sender: group.sender.email,
                                 detectionEnabled: !group.detectionEnabled,
                               });
-                              await refresh();
+                              await hydrateDashboard();
                             })
                           }
                           review={() => void review(group.sender.email)}
@@ -543,15 +670,15 @@ function App() {
                   <div>
                     <button
                       type="button"
-                      disabled={busy || offset === 0}
-                      onClick={() => void task(() => refresh(Math.max(0, offset - 20)))}
+                      disabled={offset === 0}
+                      onClick={() => refresh(Math.max(0, offset - 20))}
                     >
                       Anterior
                     </button>
                     <button
                       type="button"
-                      disabled={busy || offset + 20 >= list.total}
-                      onClick={() => void task(() => refresh(offset + 20))}
+                      disabled={offset + 20 >= list.total}
+                      onClick={() => refresh(offset + 20)}
                     >
                       Siguiente
                     </button>
@@ -641,6 +768,7 @@ function SenderRows({
   expanded,
   selected,
   selectedMessages,
+  messages,
   busy,
   expand,
   toggleSender,
@@ -652,6 +780,7 @@ function SenderRows({
   expanded: boolean;
   selected: boolean;
   selectedMessages: Set<string>;
+  messages: DashboardMessage[];
   busy: boolean;
   expand: () => void;
   toggleSender: () => void;
@@ -666,6 +795,7 @@ function SenderRows({
           <input
             type="checkbox"
             checked={selected}
+            disabled={busy}
             onChange={toggleSender}
             aria-label={`Seleccionar remitente ${group.sender.email}`}
           />
@@ -721,7 +851,7 @@ function SenderRows({
         <tr>
           <td colSpan={8}>
             <SenderDetails
-              sender={group.sender.email}
+              items={messages}
               selected={selectedMessages}
               onSelection={selectMessages}
             />

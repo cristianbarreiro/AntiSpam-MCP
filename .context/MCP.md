@@ -9,7 +9,7 @@ Use the shared dispatcher in apps/mcp-server/src/contracts.ts for dashboard pari
 
 | Tool | Class | Effects / bounds |
 | --- | --- | --- |
-| mailbox_scan | READ | 1–10000 metadata messages, default 1000; ephemeral cache and durable scan audit |
+| mailbox_scan | READ | 1–10000 metadata messages, default 1000; versioned dashboard snapshot, five-minute active cache and durable scan audit |
 | sender_list | READ | Filter/sort cached summaries; limit <=100, bounded offset, five-minute freshness |
 | sender_messages | READ | On-demand metadata page <=100; opaque sender-bound five-minute cursor |
 | sender_message_classifications | READ | Same bounded page plus deterministic category/protections |

@@ -214,6 +214,75 @@ describe("policies and scans", () => {
       code: "VALIDATION_ERROR",
     });
   });
+  it("deduplicates initialization and publishes one coherent dashboard snapshot", async () => {
+    class CountedProvider extends MockProvider {
+      scans = 0;
+      override async scanMessages(input: Parameters<MockProvider["scanMessages"]>[0]) {
+        this.scans++;
+        return super.scanMessages(input);
+      }
+    }
+    const provider = new CountedProvider();
+    const x = setup(provider);
+    const first = x.mailbox.startDashboardInitialization(1000);
+    const duplicate = x.mailbox.startDashboardInitialization(1000);
+    expect(duplicate.jobId).toBe(first.jobId);
+
+    const snapshot = await x.mailbox.initializeDashboard(1000);
+    expect(snapshot).toMatchObject({
+      schemaVersion: 1,
+      accountId: mockAccount.id,
+      requestedLimit: 1000,
+      scan: { scannedMessages: 90, senderCount: 6, complete: true },
+    });
+    expect(snapshot.groups).toHaveLength(6);
+    expect(snapshot.messages).toHaveLength(90);
+    expect(snapshot.reports["30"].totalScanned).toBe(90);
+    expect(x.mailbox.dashboardStatus()).toMatchObject({
+      stage: "ready",
+      percent: 100,
+      ready: true,
+      source: "live",
+    });
+    expect(provider.scans).toBe(1);
+  });
+  it("restores an account-scoped dashboard snapshot without another provider scan", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "inboxguardian-snapshot-test-"));
+    const path = join(dir, "db.sqlite");
+    const firstStore = new SqliteStore(path);
+    firstStore.migrate();
+    const firstMailbox = new MailboxService(new MockProvider(), firstStore, mockAccount);
+    const live = await firstMailbox.initializeDashboard(1000);
+    firstStore.close();
+
+    class CountedProvider extends MockProvider {
+      scans = 0;
+      override async scanMessages(input: Parameters<MockProvider["scanMessages"]>[0]) {
+        this.scans++;
+        return super.scanMessages(input);
+      }
+    }
+    const provider = new CountedProvider();
+    const secondStore = new SqliteStore(path);
+    secondStore.migrate();
+    const secondMailbox = new MailboxService(provider, secondStore, mockAccount);
+    const restored = await secondMailbox.initializeDashboard(1000);
+    expect(restored.datasetVersion).toBe(live.datasetVersion);
+    expect(secondMailbox.dashboardStatus()).toMatchObject({ source: "cache", ready: true });
+    expect(
+      secondMailbox.list({
+        minimumMessages: 1,
+        includeIgnored: false,
+        sortBy: "MESSAGE_COUNT",
+        limit: 20,
+        offset: 0,
+        candidatesOnly: false,
+      }).items,
+    ).toHaveLength(6);
+    expect(provider.scans).toBe(0);
+    secondStore.close();
+    rmSync(dir, { recursive: true });
+  });
 });
 describe("cleanup safety", () => {
   it("creates one immutable multi-sender plan and excludes protected messages by default", async () => {

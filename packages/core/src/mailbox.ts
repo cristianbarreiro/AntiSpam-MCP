@@ -3,6 +3,8 @@ import { aggregate } from "./aggregation.js";
 import { classifyMessage } from "./classification.js";
 import type {
   Classification,
+  DashboardJobStatus,
+  DashboardSnapshot,
   MailAccount,
   MailboxNoiseReport,
   MailboxScanResult,
@@ -10,7 +12,7 @@ import type {
   MailProvider,
   SenderGroup,
 } from "./domain.js";
-import { AppError } from "./errors.js";
+import { AppError, safeError } from "./errors.js";
 import { normalizeAddress } from "./sender.js";
 import type { Store } from "./store.js";
 export class MailboxService {
@@ -18,16 +20,39 @@ export class MailboxService {
     | { messages: MailMessage[]; summary: MailboxScanResult; expires: number }
     | undefined;
   private cursors = new Map<string, { sender: string; provider: string; expires: number }>();
+  private dashboardSnapshotValue: DashboardSnapshot | undefined;
+  private dashboardJob: Promise<DashboardSnapshot> | undefined;
+  private dashboardStatusValue: DashboardJobStatus;
   constructor(
     readonly provider: MailProvider,
     readonly store: Store,
     readonly account: MailAccount,
     private readonly now = () => Date.now(),
-  ) {}
+  ) {
+    const timestamp = new Date(this.now()).toISOString();
+    this.dashboardStatusValue = {
+      jobId: randomUUID(),
+      accountKey: account.id,
+      scopeKey: "max:1000",
+      stage: "idle",
+      processed: 0,
+      total: null,
+      percent: null,
+      coverage: "unknown",
+      ready: false,
+      source: "none",
+      startedAt: timestamp,
+      updatedAt: timestamp,
+    };
+  }
   assertAccount(m: MailMessage) {
     if (m.accountId !== this.account.id) throw new AppError("PERMISSION_DENIED");
   }
-  async collect(max: number, sender?: string) {
+  async collect(
+    max: number,
+    sender?: string,
+    onProgress?: (processed: number, total: number | null) => void,
+  ) {
     const messages = new Map<string, MailMessage>();
     const seen = new Set<string>();
     let cursor: string | undefined;
@@ -41,6 +66,7 @@ export class MailboxService {
         this.assertAccount(m);
         if (!m.trashed && (!sender || m.sender.email === sender)) messages.set(m.id, m);
       }
+      onProgress?.(messages.size, null);
       if (messages.size > max) throw new AppError("PROVIDER_ERROR");
       if (!page.cursor) return { messages: [...messages.values()], complete: true };
       if (messages.size >= max) return { messages: [...messages.values()], complete: false };
@@ -53,14 +79,94 @@ export class MailboxService {
   private groups(messages: MailMessage[]) {
     return aggregate(messages, (a, s) => this.store.policy(a, s)?.detectionEnabled ?? true);
   }
-  async scan(maxMessages: number): Promise<MailboxScanResult> {
-    const { messages, complete } = await this.collect(maxMessages);
+  private updateDashboardStatus(update: Partial<DashboardJobStatus>) {
+    this.dashboardStatusValue = {
+      ...this.dashboardStatusValue,
+      ...update,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+  }
+  dashboardStatus(): DashboardJobStatus {
+    return structuredClone(this.dashboardStatusValue);
+  }
+  dashboardSnapshot(): DashboardSnapshot {
+    if (!this.dashboardSnapshotValue) throw new AppError("SCAN_REQUIRED");
+    return structuredClone(this.dashboardSnapshotValue);
+  }
+  private buildSnapshot(
+    messages: MailMessage[],
+    summary: MailboxScanResult,
+    scopeKey: string,
+  ): DashboardSnapshot {
+    const previousCache = this.cache;
+    this.cache = { messages, summary, expires: this.now() + 300000 };
+    const snapshot: DashboardSnapshot = {
+      schemaVersion: 1,
+      datasetVersion: randomUUID(),
+      accountId: this.account.id,
+      scopeKey,
+      requestedLimit: summary.requestedLimit,
+      generatedAt: summary.generatedAt,
+      scan: summary,
+      groups: this.groups(messages),
+      reports: {
+        "7": this.noiseReport(7, 100),
+        "30": this.noiseReport(30, 100),
+        "90": this.noiseReport(90, 100),
+      },
+      messages: messages.map((message) => ({
+        id: message.id,
+        sender: message.sender,
+        subject: message.subject,
+        date: message.date,
+        unread: message.unread,
+        signals: message.signals,
+        classification: classifyMessage(message),
+      })),
+    };
+    this.cache = previousCache;
+    return snapshot;
+  }
+  private restoreSnapshot(snapshot: DashboardSnapshot) {
+    const messages: MailMessage[] = snapshot.messages.map((message) => {
+      return {
+        id: message.id,
+        accountId: snapshot.accountId,
+        sender: message.sender,
+        subject: message.subject,
+        date: message.date,
+        unread: message.unread,
+        trashed: false,
+        signals: message.signals,
+      };
+    });
+    this.cache = { messages, summary: snapshot.scan, expires: this.now() + 300000 };
+    this.dashboardSnapshotValue = snapshot;
+  }
+  private async prepareDashboard(maxMessages: number, scopeKey: string) {
+    this.updateDashboardStatus({
+      stage: this.dashboardSnapshotValue ? "refreshing" : "connecting",
+      processed: 0,
+      total: null,
+      percent: this.dashboardSnapshotValue ? null : 5,
+    });
+    this.updateDashboardStatus({ stage: "fetching", percent: null });
+    const { messages, complete } = await this.collect(maxMessages, undefined, (processed) =>
+      this.updateDashboardStatus({ processed }),
+    );
+    this.updateDashboardStatus({
+      stage: "processing",
+      processed: messages.length,
+      total: messages.length,
+      percent: 58,
+    });
     const groups = this.groups(messages);
+    this.updateDashboardStatus({ stage: "classifying", percent: 72 });
     const classificationSummary: MailboxScanResult["classificationSummary"] = {};
-    for (const g of groups)
-      classificationSummary[g.classification.classification] =
-        (classificationSummary[g.classification.classification] ?? 0) + 1;
-    const summary = {
+    for (const group of groups)
+      classificationSummary[group.classification.classification] =
+        (classificationSummary[group.classification.classification] ?? 0) + 1;
+    const summary: MailboxScanResult = {
       requestedLimit: maxMessages,
       scannedMessages: messages.length,
       senderCount: groups.length,
@@ -68,12 +174,110 @@ export class MailboxService {
       generatedAt: new Date(this.now()).toISOString(),
       classificationSummary,
     };
+    this.updateDashboardStatus({ stage: "preparing_view", percent: 86 });
+    const snapshot = this.buildSnapshot(messages, summary, scopeKey);
+    this.updateDashboardStatus({ stage: "persisting", percent: 94 });
+    this.store.saveDashboardSnapshot(snapshot);
     this.store.audit(this.account.id, "SCAN_COMPLETED", {
       count: messages.length,
       result: complete ? "COMPLETE" : "PARTIAL",
     });
     this.cache = { messages, summary, expires: this.now() + 300000 };
-    return summary;
+    this.dashboardSnapshotValue = snapshot;
+    this.updateDashboardStatus({
+      datasetVersion: snapshot.datasetVersion,
+      stage: "ready",
+      processed: messages.length,
+      total: messages.length,
+      percent: 100,
+      coverage: complete ? "complete" : "partial",
+      ready: true,
+      source: "live",
+      error: undefined,
+    });
+    return snapshot;
+  }
+  startDashboardInitialization(maxMessages = 1000, force = false): DashboardJobStatus {
+    if (!Number.isInteger(maxMessages) || maxMessages < 1 || maxMessages > 10000)
+      throw new AppError("VALIDATION_ERROR");
+    const scopeKey = `max:${maxMessages}`;
+    if (this.dashboardJob) {
+      if (this.dashboardStatusValue.scopeKey === scopeKey) return this.dashboardStatus();
+      throw new AppError("VALIDATION_ERROR");
+    }
+    if (!force) {
+      const cached =
+        this.dashboardSnapshotValue?.scopeKey === scopeKey
+          ? this.dashboardSnapshotValue
+          : this.store.dashboardSnapshot(this.account.id, scopeKey);
+      if (cached) {
+        this.restoreSnapshot(cached);
+        const timestamp = new Date(this.now()).toISOString();
+        this.dashboardStatusValue = {
+          jobId: randomUUID(),
+          accountKey: this.account.id,
+          scopeKey,
+          datasetVersion: cached.datasetVersion,
+          stage: "ready",
+          processed: cached.scan.scannedMessages,
+          total: cached.scan.scannedMessages,
+          percent: 100,
+          coverage: cached.scan.complete ? "complete" : "partial",
+          ready: true,
+          source: "cache",
+          startedAt: timestamp,
+          updatedAt: timestamp,
+        };
+        return this.dashboardStatus();
+      }
+    }
+    const timestamp = new Date(this.now()).toISOString();
+    const hasUsableSnapshot = this.dashboardSnapshotValue?.scopeKey === scopeKey;
+    this.dashboardStatusValue = {
+      jobId: randomUUID(),
+      accountKey: this.account.id,
+      scopeKey,
+      stage: hasUsableSnapshot ? "refreshing" : "connecting",
+      processed: 0,
+      total: null,
+      percent: hasUsableSnapshot ? null : 0,
+      coverage: hasUsableSnapshot
+        ? this.dashboardSnapshotValue?.scan.complete
+          ? "complete"
+          : "partial"
+        : "unknown",
+      ready: Boolean(hasUsableSnapshot),
+      source: hasUsableSnapshot ? this.dashboardStatusValue.source : "none",
+      startedAt: timestamp,
+      updatedAt: timestamp,
+    };
+    this.dashboardJob = this.prepareDashboard(maxMessages, scopeKey)
+      .catch((error) => {
+        const safe = safeError(error);
+        this.updateDashboardStatus({
+          stage: "error",
+          percent: null,
+          ready: Boolean(this.dashboardSnapshotValue),
+          error: {
+            ...safe,
+            retryable: ["PROVIDER_ERROR", "RATE_LIMITED"].includes(safe.code),
+          },
+        });
+        throw error;
+      })
+      .finally(() => {
+        this.dashboardJob = undefined;
+      });
+    void this.dashboardJob.catch(() => undefined);
+    return this.dashboardStatus();
+  }
+  async initializeDashboard(maxMessages = 1000, force = false): Promise<DashboardSnapshot> {
+    this.startDashboardInitialization(maxMessages, force);
+    if (this.dashboardJob) await this.dashboardJob;
+    return this.dashboardSnapshot();
+  }
+  async scan(maxMessages: number): Promise<MailboxScanResult> {
+    return (await this.initializeDashboard(maxMessages, true)).scan;
   }
   list(input: {
     classification?: Classification;
@@ -144,7 +348,7 @@ export class MailboxService {
   }
   noiseReport(windowDays: 7 | 30 | 90, limit: number): MailboxNoiseReport {
     if (!this.cache || this.cache.expires < this.now()) throw new AppError("SCAN_REQUIRED");
-    const sampledAt = new Date(this.now()).toISOString();
+    const sampledAt = this.cache.summary.generatedAt;
     const cutoff = this.now() - windowDays * 86400000;
     const recentCutoff = (days: number) => this.now() - days * 86400000;
     const inWindow = this.cache.messages.filter((message) => Date.parse(message.date) >= cutoff);
@@ -197,10 +401,21 @@ export class MailboxService {
       source: "USER" as const,
     };
     this.store.setPolicy(p);
+    if (this.cache && this.dashboardSnapshotValue) {
+      const snapshot = this.buildSnapshot(
+        this.cache.messages,
+        this.cache.summary,
+        this.dashboardSnapshotValue.scopeKey,
+      );
+      this.dashboardSnapshotValue = snapshot;
+      this.store.saveDashboardSnapshot(snapshot);
+      this.updateDashboardStatus({ datasetVersion: snapshot.datasetVersion });
+    }
     return p;
   }
   invalidate() {
     this.cache = undefined;
+    this.dashboardSnapshotValue = undefined;
   }
   group(messages: MailMessage[]): SenderGroup | undefined {
     return this.groups(messages)[0];

@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   AuditEvent,
   CleanupPreview,
+  DashboardSnapshot,
   Outcome,
   PreviewStatus,
   SenderPolicy,
@@ -19,6 +20,10 @@ CREATE TABLE cleanup_outcomes(preview_id TEXT NOT NULL REFERENCES cleanup_previe
 CREATE TABLE audit_events(id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, action TEXT NOT NULL, account TEXT NOT NULL, preview_id TEXT, count INTEGER, result TEXT) STRICT;
 CREATE INDEX audit_account ON audit_events(account,id);
 `;
+const migration2 = `
+CREATE TABLE dashboard_snapshots(account TEXT NOT NULL, scope_key TEXT NOT NULL, data TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(account,scope_key)) STRICT;
+CREATE INDEX dashboard_snapshots_updated ON dashboard_snapshots(updated);
+`;
 type Row = Record<string, string | number | bigint | Uint8Array | null>;
 export class SqliteStore implements Store {
   readonly db: DatabaseSync;
@@ -30,10 +35,15 @@ export class SqliteStore implements Store {
   migrate() {
     this.transaction(() => {
       const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
-      if (version > 1) throw new AppError("INTERNAL_ERROR");
+      if (version > 2) throw new AppError("INTERNAL_ERROR");
       if (version === 0) {
         this.db.exec(migration1);
         this.db.exec("PRAGMA user_version=1");
+      }
+      const current = Number(this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+      if (current === 1) {
+        this.db.exec(migration2);
+        this.db.exec("PRAGMA user_version=2");
       }
     });
   }
@@ -257,6 +267,39 @@ export class SqliteStore implements Store {
         ...(r.result ? { result: String(r.result) } : {}),
       }));
   }
+  dashboardSnapshot(account: string, scopeKey: string): DashboardSnapshot | undefined {
+    const row = this.db
+      .prepare("SELECT data FROM dashboard_snapshots WHERE account=? AND scope_key=?")
+      .get(account, scopeKey);
+    if (!row) return undefined;
+    try {
+      const snapshot = JSON.parse(String(row.data)) as DashboardSnapshot;
+      if (
+        snapshot.schemaVersion !== 1 ||
+        snapshot.accountId !== account ||
+        snapshot.scopeKey !== scopeKey ||
+        !snapshot.scan ||
+        !Array.isArray(snapshot.groups) ||
+        !Array.isArray(snapshot.messages) ||
+        !snapshot.reports?.["7"] ||
+        !snapshot.reports?.["30"] ||
+        !snapshot.reports?.["90"]
+      )
+        return undefined;
+      return snapshot;
+    } catch {
+      return undefined;
+    }
+  }
+  saveDashboardSnapshot(snapshot: DashboardSnapshot) {
+    this.transaction(() => {
+      this.db
+        .prepare(
+          "INSERT INTO dashboard_snapshots(account,scope_key,data,updated) VALUES(?,?,?,?) ON CONFLICT(account,scope_key) DO UPDATE SET data=excluded.data,updated=excluded.updated",
+        )
+        .run(snapshot.accountId, snapshot.scopeKey, JSON.stringify(snapshot), snapshot.generatedAt);
+    });
+  }
   prune(now = new Date()) {
     const cutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
     this.transaction(() => {
@@ -270,6 +313,7 @@ export class SqliteStore implements Store {
           "DELETE FROM audit_events WHERE timestamp<? AND (preview_id IS NULL OR preview_id NOT IN (SELECT id FROM cleanup_previews WHERE status IN ('EXECUTING','UNCERTAIN')))",
         )
         .run(cutoff);
+      this.db.prepare("DELETE FROM dashboard_snapshots WHERE updated<?").run(cutoff);
     });
   }
 }

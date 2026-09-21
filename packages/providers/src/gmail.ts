@@ -140,6 +140,7 @@ export class GmailProvider implements MailProvider {
     private readonly api: GmailTransport,
     private readonly delay = (milliseconds: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
+    private readonly metadataConcurrency = 8,
   ) {}
   private async read(path: string): Promise<unknown> {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -212,14 +213,21 @@ export class GmailProvider implements MailProvider {
       .safeParse(await this.read(`messages?${params}`));
     if (!r.success) throw new AppError("PROVIDER_ERROR");
     const items: MailMessage[] = [];
-    // Deliberately sequential and bounded to avoid a burst of API requests.
-    for (const ref of r.data.messages) {
-      try {
-        const m = await this.getMessageMetadata(ref.id);
-        if (!m.trashed && (!sender || m.sender.email === sender)) items.push(m);
-      } catch (e) {
-        if (!(e instanceof AppError && e.code === "NOT_FOUND")) throw e;
-      }
+    const concurrency = Math.max(1, Math.min(16, this.metadataConcurrency));
+    for (let offset = 0; offset < r.data.messages.length; offset += concurrency) {
+      const batch = await Promise.all(
+        r.data.messages.slice(offset, offset + concurrency).map(async (ref) => {
+          try {
+            return await this.getMessageMetadata(ref.id);
+          } catch (error) {
+            if (error instanceof AppError && error.code === "NOT_FOUND") return undefined;
+            throw error;
+          }
+        }),
+      );
+      for (const message of batch)
+        if (message && !message.trashed && (!sender || message.sender.email === sender))
+          items.push(message);
     }
     let cursor: string | undefined;
     if (r.data.nextPageToken) {

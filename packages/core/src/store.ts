@@ -1,4 +1,11 @@
-import type { AuditEvent, CleanupPreview, Outcome, PreviewStatus, SenderPolicy } from "./domain.js";
+import type {
+  AuditEvent,
+  CleanupPreview,
+  DashboardSnapshot,
+  Outcome,
+  PreviewStatus,
+  SenderPolicy,
+} from "./domain.js";
 export interface Store {
   policy(account: string, sender: string): SenderPolicy | undefined;
   setPolicy(policy: SenderPolicy): void;
@@ -19,4 +26,6 @@ export interface Store {
     details?: { previewId?: string; count?: number; result?: string },
   ): void;
   audits(account: string, limit: number): AuditEvent[];
+  dashboardSnapshot(account: string, scopeKey: string): DashboardSnapshot | undefined;
+  saveDashboardSnapshot(snapshot: DashboardSnapshot): void;
 }

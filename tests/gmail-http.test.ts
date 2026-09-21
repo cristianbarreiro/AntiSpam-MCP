@@ -65,6 +65,25 @@ it("keeps pagination opaque and uses metadata-only GET plus explicit trash POST"
     p.scanMessages({ limit: 10, sender: "other@example.com", cursor: first.cursor }),
   ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
 });
+it("fetches Gmail metadata with bounded concurrency", async () => {
+  let active = 0;
+  let peak = 0;
+  const api: GmailTransport = {
+    async request(path) {
+      if (path === "profile") return { emailAddress: "test@example.com" };
+      if (path.startsWith("messages?"))
+        return { messages: Array.from({ length: 20 }, (_, index) => ({ id: `id-${index}` })) };
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active--;
+      return dto;
+    },
+  };
+  await new GmailProvider(api, async () => {}, 8).scanMessages({ limit: 20 });
+  expect(peak).toBeGreaterThan(1);
+  expect(peak).toBeLessThanOrEqual(8);
+});
 it("backs off bounded idempotent reads but never retries a Trash mutation", async () => {
   let reads = 0;
   let mutations = 0;
@@ -135,6 +154,21 @@ it("isolates human approval behind a local key, origin and host checks", async (
       },
       body: JSON.stringify(body),
     });
+  expect((await post("/api/dashboard/start", { maxMessages: 1000 })).status).toBe(200);
+  let dashboardStatus: { stage?: string; ready?: boolean } = {};
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const response = await post("/api/dashboard/status", {});
+    dashboardStatus = (await response.json()) as typeof dashboardStatus;
+    if (dashboardStatus.stage === "ready") break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  expect(dashboardStatus).toMatchObject({ stage: "ready", ready: true });
+  const dashboardView = await post("/api/dashboard/snapshot", {});
+  expect(dashboardView.status).toBe(200);
+  expect(await dashboardView.json()).toMatchObject({
+    snapshot: { scan: { scannedMessages: 90 }, groups: expect.any(Array) },
+    pending: [{ id: p.id, status: "PENDING" }],
+  });
   expect((await post("/api/confirm", { previewId: p.id }, false)).status).toBe(403);
   expect(
     (await post("/api/confirm", { previewId: p.id }, true, "https://attacker.example")).status,

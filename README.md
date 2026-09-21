@@ -43,9 +43,10 @@ The server prints the dashboard URL and writes a temporary login key to
 the synthetic mailbox. `pnpm dev` runs the dashboard only. Use `pnpm dev:mcp` when
 an MCP client launches the stdio server; it also serves the dashboard on port 4317.
 
-The mock mailbox is rebuilt when the process starts. Sender detection policies,
-previews, audit records, and cleanup outcomes persist in SQLite unless a different
-`DATABASE_PATH` is configured.
+The mock mailbox is rebuilt when the process starts. The latest bounded dashboard
+snapshot, sender detection policies, previews, audit records and cleanup outcomes
+persist in SQLite unless a different `DATABASE_PATH` is configured. A warm launch
+opens the saved view immediately and refreshes it in the background.
 
 ## Gmail configuration
 
@@ -132,7 +133,7 @@ Agents start at [AGENTS.md](AGENTS.md). Stable architecture and limits live in
   selection of at most 1,000 messages.
 - Sender parsing covers common display-name/address forms, not every RFC edge case.
 - No body analysis, LLM classification, permanent delete, hosted authentication,
-  encrypted SQLite, background worker, or Outlook adapter.
+  encrypted SQLite, independent background worker, or Outlook adapter.
 - Uncertain provider outcomes require manual inspection; reconciliation never retries
   a mailbox mutation.
 

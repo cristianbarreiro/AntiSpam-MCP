@@ -26,6 +26,12 @@ function authorized(req: IncomingMessage, key: string) {
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
 const previewInput = z.object({ previewId: z.string().uuid() }).strict();
+const dashboardStartInput = z
+  .object({
+    maxMessages: z.number().int().min(1).max(10000).default(1000),
+    force: z.boolean().default(false),
+  })
+  .strict();
 export function createDashboardServer(
   mailbox: MailboxService,
   cleanup: CleanupService,
@@ -62,6 +68,14 @@ export function createDashboardServer(
         let result: unknown;
         if (url.pathname === "/api/session") {
           result = { account: mailbox.account };
+        } else if (url.pathname === "/api/dashboard/start") {
+          const parsed = dashboardStartInput.safeParse(raw);
+          if (!parsed.success) throw new AppError("VALIDATION_ERROR");
+          result = mailbox.startDashboardInitialization(parsed.data.maxMessages, parsed.data.force);
+        } else if (url.pathname === "/api/dashboard/status") {
+          result = mailbox.dashboardStatus();
+        } else if (url.pathname === "/api/dashboard/snapshot") {
+          result = { snapshot: mailbox.dashboardSnapshot(), pending: cleanup.pending() };
         } else if (url.pathname === "/api/pending") {
           result = cleanup.pending();
         } else if (

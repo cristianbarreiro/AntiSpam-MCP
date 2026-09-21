@@ -203,3 +203,57 @@ export interface MailboxScanResult {
   generatedAt: string;
   classificationSummary: Partial<Record<Classification, number>>;
 }
+
+export type DashboardJobStage =
+  | "idle"
+  | "connecting"
+  | "restoring_cache"
+  | "fetching"
+  | "processing"
+  | "classifying"
+  | "persisting"
+  | "preparing_view"
+  | "ready"
+  | "refreshing"
+  | "error"
+  | "cancelled";
+
+export interface DashboardMessage {
+  id: MessageId;
+  sender: MailSender;
+  subject: string;
+  date: string;
+  unread: boolean;
+  signals: Signal[];
+  classification: MessageClassification;
+}
+
+export interface DashboardSnapshot {
+  schemaVersion: 1;
+  datasetVersion: string;
+  accountId: ProviderAccountId;
+  scopeKey: string;
+  requestedLimit: number;
+  generatedAt: string;
+  scan: MailboxScanResult;
+  groups: SenderGroup[];
+  reports: Record<"7" | "30" | "90", MailboxNoiseReport>;
+  messages: DashboardMessage[];
+}
+
+export interface DashboardJobStatus {
+  jobId: string;
+  accountKey: ProviderAccountId;
+  scopeKey: string;
+  datasetVersion?: string;
+  stage: DashboardJobStage;
+  processed: number;
+  total: number | null;
+  percent: number | null;
+  coverage: "complete" | "partial" | "unknown";
+  ready: boolean;
+  source: "none" | "cache" | "live";
+  startedAt: string;
+  updatedAt: string;
+  error?: { code: string; message: string; retryable: boolean };
+}

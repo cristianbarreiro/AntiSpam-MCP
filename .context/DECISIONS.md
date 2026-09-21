@@ -44,6 +44,14 @@ across at most 20 senders and 1000 IDs. Protected inclusion needs a separate loc
 confirmation. Gmail mutations remain per-message because batch success has no
 individual result detail; bounded backoff applies only to idempotent reads.
 
+## D009 — Versioned dashboard snapshot and authoritative preload
+Status: accepted. One initialization job per account/scope prepares a consistent
+metadata-only dashboard snapshot and exposes truthful retained progress. SQLite keeps
+the latest bounded snapshot for warm startup and 30-day pruning; refresh publishes a
+new dataset version only after all required derived data is ready. Filters, pagination
+and scanned sender details use the prepared local dataset. Gmail metadata reads use
+bounded concurrency while mutation behavior remains unchanged.
+
 ## Meaningful follow-up
 Live Gmail OAuth/API verification; P1 policies and future-rule consent; richer
 sender/RFC normalization; actionable manual resolution of uncertain operations;
