@@ -100,8 +100,15 @@ describe("domain", () => {
         GOOGLE_CLIENT_ID: "not-used",
         GOOGLE_CLIENT_SECRET: "not-used",
         GOOGLE_TOKEN_FILE: "missing-token-file",
-      }).MAIL_PROVIDER,
-    ).toBe("mock");
+      }),
+    ).toMatchObject({
+      MAIL_PROVIDER: "mock",
+      GMAIL_SYNC_QUOTA_BUDGET_PER_MINUTE: 2000,
+      GMAIL_SYNC_MAXIMUM_BURST: 400,
+      GMAIL_SYNC_CONCURRENCY: 2,
+      GMAIL_SYNC_MAX_BACKOFF_MS: 64000,
+      GMAIL_SYNC_MAX_RETRIES: 8,
+    });
     expect(() => loadConfig({ MAIL_PROVIDER: "gmail" })).toThrow(
       "Gmail requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET",
     );

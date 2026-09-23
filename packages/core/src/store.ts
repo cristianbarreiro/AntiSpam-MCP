@@ -2,6 +2,8 @@ import type {
   AuditEvent,
   CleanupPreview,
   DashboardSnapshot,
+  MailMessage,
+  MailSyncState,
   Outcome,
   PreviewStatus,
   SenderPolicy,
@@ -28,4 +30,10 @@ export interface Store {
   audits(account: string, limit: number): AuditEvent[];
   dashboardSnapshot(account: string, scopeKey: string): DashboardSnapshot | undefined;
   saveDashboardSnapshot(snapshot: DashboardSnapshot): void;
+  syncState(account: string): MailSyncState | undefined;
+  saveSyncPage(state: MailSyncState, upserts: MailMessage[], deletedIds: string[]): void;
+  syncMessages(account: string, limit: number): MailMessage[];
+  acquireSyncLease(account: string, owner: string, expiresAt: string, now: string): boolean;
+  renewSyncLease(account: string, owner: string, expiresAt: string): void;
+  releaseSyncLease(account: string, owner: string): void;
 }

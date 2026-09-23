@@ -13,12 +13,22 @@ const schema = z.object({
   GOOGLE_REDIRECT_URI: z.string().default("http://127.0.0.1:4318/oauth/callback"),
   GOOGLE_REFRESH_TOKEN: z.string().optional(),
   GOOGLE_TOKEN_FILE: z.string().optional(),
+  GMAIL_SYNC_QUOTA_BUDGET_PER_MINUTE: z.coerce.number().int().min(100).max(6000).default(2000),
+  GMAIL_SYNC_MAXIMUM_BURST: z.coerce.number().int().min(20).max(2000).default(400),
+  GMAIL_SYNC_CONCURRENCY: z.coerce.number().int().min(1).max(2).default(2),
+  GMAIL_SYNC_MAX_BACKOFF_MS: z.coerce.number().int().min(1000).max(64000).default(64000),
+  GMAIL_SYNC_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(8),
 });
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (env === process.env) dotenv({ quiet: true });
   const parsed = schema.safeParse(env);
   if (!parsed.success) throw new AppError("VALIDATION_ERROR", "Invalid server configuration.");
   const c = parsed.data;
+  if (c.GMAIL_SYNC_MAXIMUM_BURST > c.GMAIL_SYNC_QUOTA_BUDGET_PER_MINUTE)
+    throw new AppError(
+      "VALIDATION_ERROR",
+      "GMAIL_SYNC_MAXIMUM_BURST cannot exceed GMAIL_SYNC_QUOTA_BUDGET_PER_MINUTE.",
+    );
   if (c.MAIL_PROVIDER === "gmail") {
     if (c.GOOGLE_TOKEN_FILE && !c.GOOGLE_REFRESH_TOKEN) {
       try {

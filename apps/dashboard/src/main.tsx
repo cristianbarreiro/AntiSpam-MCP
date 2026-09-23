@@ -61,9 +61,29 @@ const stageNames: Record<DashboardJobStatus["stage"], string> = {
   preparing_view: "Preparando filtros y vista",
   ready: "Listo",
   refreshing: "Actualizando datos",
+  discovering: "Preparando la sincronización",
+  syncing: "Sincronizando con Gmail",
+  incremental_sync: "Aplicando cambios recientes",
+  cooling_down: "Gmail pidió reducir temporalmente la velocidad",
+  retrying: "Reanudando la sincronización",
   error: "No se pudo completar",
   cancelled: "Carga cancelada",
 };
+
+function dashboardErrorMessage(error: DashboardJobStatus["error"]): string {
+  if (!error) return "La preparación no pudo completarse.";
+  const messages: Record<string, string> = {
+    RATE_LIMITED:
+      "Gmail alcanzó temporalmente su límite de lectura. Esperá unos segundos y volvé a intentar; no se realizó ningún cambio en tus mensajes.",
+    PROVIDER_ERROR:
+      "Gmail no pudo completar una lectura. Revisá tu conexión y volvé a intentar en unos segundos.",
+    AUTHENTICATION_ERROR:
+      "La conexión con Gmail venció. Volvé a conectar la cuenta y reintentá la preparación.",
+    PERMISSION_DENIED:
+      "InboxGuardian no tiene permiso para leer los metadatos necesarios de Gmail.",
+  };
+  return messages[error.code] ?? "La preparación no pudo completarse. Volvé a intentar.";
+}
 
 function listingFromSnapshot(
   snapshot: DashboardSnapshot,
@@ -101,6 +121,7 @@ function listingFromSnapshot(
 
 function LoadingScreen({ status, onRetry }: { status?: DashboardJobStatus; onRetry: () => void }) {
   const determinate = status?.percent !== null && status?.percent !== undefined;
+  const failed = status?.stage === "error";
   return (
     <section className="loading-panel" aria-labelledby="loading-title">
       <span className="loading-mark" aria-hidden="true">
@@ -112,7 +133,7 @@ function LoadingScreen({ status, onRetry }: { status?: DashboardJobStatus; onRet
         <p>Estamos analizando tus mensajes y organizando tus remitentes.</p>
       </div>
       <div
-        className={`progress-track ${determinate ? "" : "indeterminate"}`}
+        className={`progress-track ${failed ? "failed" : determinate ? "" : "indeterminate"}`}
         role="progressbar"
         aria-label="Progreso de preparación"
         aria-valuemin={0}
@@ -120,20 +141,32 @@ function LoadingScreen({ status, onRetry }: { status?: DashboardJobStatus; onRet
         {...(determinate ? { "aria-valuenow": status?.percent ?? 0 } : {})}
       >
         <span
-          className={determinate ? undefined : "progress-indeterminate"}
-          style={determinate ? { width: `${status?.percent ?? 0}%` } : undefined}
+          className={
+            failed ? "progress-failed" : determinate ? undefined : "progress-indeterminate"
+          }
+          style={!failed && determinate ? { width: `${status?.percent ?? 0}%` } : undefined}
         />
       </div>
       <div className="loading-status" aria-live="polite">
         <strong>{stageNames[status?.stage ?? "connecting"]}</strong>
         <span>
-          {determinate
-            ? `${status?.percent}%`
-            : status?.processed
-              ? `${status.processed} mensajes procesados`
-              : "Calculando el alcance real…"}
+          {status?.estimatedTotal && status.processed
+            ? `${status.processed} de aproximadamente ${status.estimatedTotal}`
+            : determinate
+              ? `${status?.percent}%`
+              : status?.processed
+                ? `${status.processed} mensajes procesados`
+                : "Calculando el alcance real…"}
         </span>
       </div>
+      {status?.stage === "cooling_down" && (
+        <p className="coverage warning">
+          Tu progreso está guardado. La sincronización se reanudará automáticamente
+          {status.retryAt
+            ? ` alrededor de las ${new Intl.DateTimeFormat("es-UY", { timeStyle: "medium" }).format(new Date(status.retryAt))}.`
+            : "."}
+        </p>
+      )}
       {status?.coverage === "partial" && (
         <p className="coverage warning">
           El progreso corresponde a la muestra seleccionada, no a todo el buzón.
@@ -141,7 +174,7 @@ function LoadingScreen({ status, onRetry }: { status?: DashboardJobStatus; onRet
       )}
       {status?.error && (
         <div className="feedback error" role="alert">
-          <p>{status.error.message}</p>
+          <p>{dashboardErrorMessage(status.error)}</p>
           <button type="button" onClick={onRetry}>
             Reintentar
           </button>
@@ -288,13 +321,18 @@ function App() {
     refresh(0, view.snapshot);
   }
   async function initializeDashboard(force = false, background = false) {
+    setError("");
     try {
+      let hydratedVersion: string | undefined;
       let status = await api<DashboardJobStatus>("dashboard/start", {
-        maxMessages: 1000,
+        maxMessages: 10000,
         force,
       });
       setJobStatus(status);
-      if (status.ready) await hydrateDashboard();
+      if (status.ready) {
+        await hydrateDashboard();
+        hydratedVersion = status.datasetVersion;
+      }
       if (!force && status.stage === "ready" && status.source === "cache") {
         void initializeDashboard(true, true);
         return;
@@ -303,6 +341,10 @@ function App() {
         await new Promise((resolve) => setTimeout(resolve, 250));
         status = await api<DashboardJobStatus>("dashboard/status");
         setJobStatus(status);
+        if (status.ready && status.datasetVersion !== hydratedVersion) {
+          await hydrateDashboard();
+          hydratedVersion = status.datasetVersion;
+        }
       }
       if (status.stage === "ready") {
         await hydrateDashboard();
@@ -311,8 +353,8 @@ function App() {
           setSelectedSenders(new Set());
           setSelectedMessages({});
         }
-      } else if (status.error) {
-        setError(status.error.message);
+      } else if (status.error && background) {
+        setError(dashboardErrorMessage(status.error));
       }
     } catch (cause) {
       setError((cause as Error).message);
@@ -467,6 +509,18 @@ function App() {
               <div className="demo-banner">
                 <strong>Buzón de demostración</strong>
                 <span>Solo contiene mensajes sintéticos.</span>
+              </div>
+            )}
+            {!["idle", "ready", "error", "cancelled"].includes(jobStatus?.stage ?? "ready") && (
+              <div className="sync-banner" role="status">
+                <strong>{stageNames[jobStatus?.stage ?? "syncing"]}</strong>
+                <span>
+                  {jobStatus?.processed ?? 0}
+                  {jobStatus?.estimatedTotal
+                    ? ` de aproximadamente ${jobStatus.estimatedTotal}`
+                    : ""}{" "}
+                  mensajes procesados. La vista local sigue disponible.
+                </span>
               </div>
             )}
             <section className="stats" aria-label="Resumen del análisis">
@@ -730,7 +784,7 @@ function App() {
             )}
           </>
         )}
-        {error && (
+        {error && (!jobStatus?.error || snapshot) && (
           <div role="alert" className="feedback error">
             {error}
           </div>

@@ -5,6 +5,8 @@ import type {
   AuditEvent,
   CleanupPreview,
   DashboardSnapshot,
+  MailMessage,
+  MailSyncState,
   Outcome,
   PreviewStatus,
   SenderPolicy,
@@ -24,6 +26,12 @@ const migration2 = `
 CREATE TABLE dashboard_snapshots(account TEXT NOT NULL, scope_key TEXT NOT NULL, data TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(account,scope_key)) STRICT;
 CREATE INDEX dashboard_snapshots_updated ON dashboard_snapshots(updated);
 `;
+const migration3 = `
+CREATE TABLE mail_sync_messages(account TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, generation TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(account,id)) STRICT;
+CREATE INDEX mail_sync_messages_account_updated ON mail_sync_messages(account,updated);
+CREATE TABLE mail_sync_state(account TEXT PRIMARY KEY, data TEXT NOT NULL, updated TEXT NOT NULL) STRICT;
+CREATE TABLE mail_sync_leases(account TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at TEXT NOT NULL) STRICT;
+`;
 type Row = Record<string, string | number | bigint | Uint8Array | null>;
 export class SqliteStore implements Store {
   readonly db: DatabaseSync;
@@ -35,7 +43,7 @@ export class SqliteStore implements Store {
   migrate() {
     this.transaction(() => {
       const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
-      if (version > 2) throw new AppError("INTERNAL_ERROR");
+      if (version > 3) throw new AppError("INTERNAL_ERROR");
       if (version === 0) {
         this.db.exec(migration1);
         this.db.exec("PRAGMA user_version=1");
@@ -44,6 +52,13 @@ export class SqliteStore implements Store {
       if (current === 1) {
         this.db.exec(migration2);
         this.db.exec("PRAGMA user_version=2");
+      }
+      const afterSnapshots = Number(
+        this.db.prepare("PRAGMA user_version").get()?.user_version ?? 0,
+      );
+      if (afterSnapshots === 2) {
+        this.db.exec(migration3);
+        this.db.exec("PRAGMA user_version=3");
       }
     });
   }
@@ -299,6 +314,85 @@ export class SqliteStore implements Store {
         )
         .run(snapshot.accountId, snapshot.scopeKey, JSON.stringify(snapshot), snapshot.generatedAt);
     });
+  }
+  syncState(account: string): MailSyncState | undefined {
+    const row = this.db.prepare("SELECT data FROM mail_sync_state WHERE account=?").get(account);
+    if (!row) return undefined;
+    try {
+      const state = JSON.parse(String(row.data)) as MailSyncState;
+      if (
+        state.accountId !== account ||
+        !["full", "incremental"].includes(state.mode) ||
+        !["idle", "syncing", "cooling_down", "completed", "failed"].includes(state.status) ||
+        !Number.isInteger(state.processedCount) ||
+        state.processedCount < 0
+      )
+        return undefined;
+      return state;
+    } catch {
+      return undefined;
+    }
+  }
+  saveSyncPage(state: MailSyncState, upserts: MailMessage[], deletedIds: string[]) {
+    this.transaction(() => {
+      const upsert = this.db.prepare(
+        "INSERT INTO mail_sync_messages(account,id,data,generation,updated) VALUES(?,?,?,?,?) ON CONFLICT(account,id) DO UPDATE SET data=excluded.data,generation=excluded.generation,updated=excluded.updated",
+      );
+      for (const message of upserts) {
+        if (message.accountId !== state.accountId) throw new AppError("PERMISSION_DENIED");
+        upsert.run(
+          state.accountId,
+          message.id,
+          JSON.stringify(message),
+          state.generation,
+          state.updatedAt,
+        );
+      }
+      const remove = this.db.prepare("DELETE FROM mail_sync_messages WHERE account=? AND id=?");
+      for (const id of new Set(deletedIds)) remove.run(state.accountId, id);
+      if (state.mode === "full" && state.status === "completed")
+        this.db
+          .prepare("DELETE FROM mail_sync_messages WHERE account=? AND generation<>?")
+          .run(state.accountId, state.generation);
+      this.db
+        .prepare(
+          "INSERT INTO mail_sync_state(account,data,updated) VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET data=excluded.data,updated=excluded.updated",
+        )
+        .run(state.accountId, JSON.stringify(state), state.updatedAt);
+    });
+  }
+  syncMessages(account: string, limit: number): MailMessage[] {
+    return this.db
+      .prepare(
+        "SELECT data FROM mail_sync_messages WHERE account=? ORDER BY json_extract(data,'$.date') DESC,id LIMIT ?",
+      )
+      .all(account, limit)
+      .flatMap((row) => {
+        try {
+          const message = JSON.parse(String(row.data)) as MailMessage;
+          return message.accountId === account ? [message] : [];
+        } catch {
+          return [];
+        }
+      });
+  }
+  acquireSyncLease(account: string, owner: string, expiresAt: string, now: string): boolean {
+    return this.transaction(() => {
+      const result = this.db
+        .prepare(
+          "INSERT INTO mail_sync_leases(account,owner,expires_at) VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at WHERE mail_sync_leases.expires_at<=? OR mail_sync_leases.owner=excluded.owner",
+        )
+        .run(account, owner, expiresAt, now);
+      return Number(result.changes) === 1;
+    });
+  }
+  renewSyncLease(account: string, owner: string, expiresAt: string) {
+    this.db
+      .prepare("UPDATE mail_sync_leases SET expires_at=? WHERE account=? AND owner=?")
+      .run(expiresAt, account, owner);
+  }
+  releaseSyncLease(account: string, owner: string) {
+    this.db.prepare("DELETE FROM mail_sync_leases WHERE account=? AND owner=?").run(account, owner);
   }
   prune(now = new Date()) {
     const cutoff = new Date(now.getTime() - 30 * 86400000).toISOString();

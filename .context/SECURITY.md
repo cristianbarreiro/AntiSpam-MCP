@@ -57,6 +57,10 @@ Optional external AI processing requires a later explicit privacy design.
 ## OAuth and secrets
 
 Gmail uses only gmail.modify: the least scope covering reading metadata and trash.
+Quota-aware sync additionally persists account-scoped message metadata, page
+checkpoints and `historyId` in the protected local SQLite database. These values do
+not authorize Gmail API calls but remain private application state. Structured sync
+logs exclude message IDs, addresses, subjects, bodies and credentials.
 Google bundles broader capabilities into this scope; the adapter exposes no sending,
 permanent deletion or arbitrary endpoint tool. OAuth uses state, PKCE, loopback-only
 callback, one-time callback acceptance, bounded lifetime and request timeouts.

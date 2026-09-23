@@ -65,9 +65,38 @@ it("keeps pagination opaque and uses metadata-only GET plus explicit trash POST"
     p.scanMessages({ limit: 10, sender: "other@example.com", cursor: first.cursor }),
   ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
 });
+it("does not index sent, draft or trashed history changes into the local analysis", async () => {
+  const api: GmailTransport = {
+    async request(path) {
+      if (path === "profile") return { emailAddress: "test@example.com", historyId: "history-1" };
+      if (path.startsWith("history?"))
+        return {
+          history: [
+            {
+              labelsAdded: [
+                { message: { id: "sent-message" } },
+                { message: { id: "draft-message" } },
+              ],
+            },
+          ],
+          historyId: "history-2",
+        };
+      if (path.includes("sent-message")) return { ...dto, id: "sent-message", labelIds: ["SENT"] };
+      return { ...dto, id: "draft-message", labelIds: ["DRAFT"] };
+    },
+  };
+  const page = await new GmailProvider(api, {
+    delay: async () => {},
+    random: () => 0,
+  }).syncPage({ mode: "incremental", historyId: "history-1", limit: 100 });
+  expect(page.upserts).toEqual([]);
+  expect(page.deletedIds.sort()).toEqual(["draft-message", "sent-message"]);
+});
 it("fetches Gmail metadata with bounded concurrency", async () => {
   let active = 0;
   let peak = 0;
+  const delays: number[] = [];
+  let now = 0;
   const api: GmailTransport = {
     async request(path) {
       if (path === "profile") return { emailAddress: "test@example.com" };
@@ -80,13 +109,24 @@ it("fetches Gmail metadata with bounded concurrency", async () => {
       return dto;
     },
   };
-  await new GmailProvider(api, async () => {}, 8).scanMessages({ limit: 20 });
+  await new GmailProvider(api, {
+    delay: async (milliseconds) => {
+      delays.push(milliseconds);
+      now += milliseconds;
+    },
+    now: () => now,
+    concurrency: 2,
+    random: () => 0,
+  }).scanMessages({ limit: 20 });
   expect(peak).toBeGreaterThan(1);
-  expect(peak).toBeLessThanOrEqual(8);
+  expect(peak).toBeLessThanOrEqual(2);
+  expect(delays.some((milliseconds) => milliseconds > 0)).toBe(true);
 });
 it("backs off bounded idempotent reads but never retries a Trash mutation", async () => {
   let reads = 0;
   let mutations = 0;
+  const delays: number[] = [];
+  let now = 0;
   const api: GmailTransport = {
     async request(path, method = "GET") {
       if (method === "POST") {
@@ -99,13 +139,109 @@ it("backs off bounded idempotent reads but never retries a Trash mutation", asyn
       return { emailAddress: "test@example.com" };
     },
   };
-  const provider = new GmailProvider(api, async () => {});
+  const provider = new GmailProvider(api, {
+    delay: async (milliseconds) => {
+      delays.push(milliseconds);
+      now += milliseconds;
+    },
+    now: () => now,
+    random: () => 0,
+  });
   expect((await provider.getAccountInfo()).email).toBe("test@example.com");
   expect(reads).toBe(2);
+  expect(delays).toEqual([expect.any(Number)]);
+  expect(delays[0]).toBeGreaterThanOrEqual(900);
   await expect(provider.moveToTrash("abc")).rejects.toThrow("uncertain mutation");
   expect(mutations).toBe(1);
 });
+it("stops retrying Gmail rate limits after a bounded recovery window", async () => {
+  let reads = 0;
+  const delays: number[] = [];
+  let now = 0;
+  const api: GmailTransport = {
+    async request() {
+      reads++;
+      throw new AppError("RATE_LIMITED");
+    },
+  };
+  const provider = new GmailProvider(api, {
+    delay: async (milliseconds) => {
+      delays.push(milliseconds);
+      now += milliseconds;
+    },
+    now: () => now,
+    random: () => 0,
+    maxRetries: 5,
+  });
+  await expect(provider.getAccountInfo()).rejects.toMatchObject({ code: "RATE_LIMITED" });
+  expect(reads).toBe(6);
+  expect(delays).toHaveLength(5);
+  expect(delays.every((milliseconds) => milliseconds >= 900)).toBe(true);
+});
+it("honors Retry-After, adds jitter to 5xx backoff and never retries authentication", async () => {
+  let now = 0;
+  const rateDelays: number[] = [];
+  let rateCalls = 0;
+  const rateProvider = new GmailProvider(
+    {
+      async request() {
+        if (rateCalls++ === 0) throw new AppError("RATE_LIMITED", undefined, 7000);
+        return { emailAddress: "test@example.com" };
+      },
+    },
+    {
+      now: () => now,
+      delay: async (milliseconds) => {
+        rateDelays.push(milliseconds);
+        now += milliseconds;
+      },
+      random: () => 0.5,
+    },
+  );
+  await rateProvider.getAccountInfo();
+  expect(rateDelays).toEqual([7000]);
+
+  now = 0;
+  const providerDelays: number[] = [];
+  let providerCalls = 0;
+  const transientProvider = new GmailProvider(
+    {
+      async request() {
+        if (providerCalls++ === 0) throw new AppError("PROVIDER_ERROR");
+        return { emailAddress: "test@example.com" };
+      },
+    },
+    {
+      now: () => now,
+      delay: async (milliseconds) => {
+        providerDelays.push(milliseconds);
+        now += milliseconds;
+      },
+      random: () => 0.5,
+    },
+  );
+  await transientProvider.getAccountInfo();
+  expect(providerDelays).toEqual([1500]);
+
+  let authenticationCalls = 0;
+  const authenticationProvider = new GmailProvider({
+    async request() {
+      authenticationCalls++;
+      throw new AppError("AUTHENTICATION_ERROR");
+    },
+  });
+  await expect(authenticationProvider.getAccountInfo()).rejects.toMatchObject({
+    code: "AUTHENTICATION_ERROR",
+  });
+  expect(authenticationCalls).toBe(1);
+});
 it("explains known Gmail permission failures without exposing the provider response", async () => {
+  expect(mapGmailForbidden({ error: { errors: [{ reason: "rateLimitExceeded" }] } })).toMatchObject(
+    { code: "RATE_LIMITED" },
+  );
+  expect(
+    mapGmailForbidden({ error: { errors: [{ reason: "userRateLimitExceeded" }] } }),
+  ).toMatchObject({ code: "RATE_LIMITED" });
   expect(
     mapGmailForbidden({ error: { errors: [{ reason: "insufficientPermissions" }] } }),
   ).toMatchObject({

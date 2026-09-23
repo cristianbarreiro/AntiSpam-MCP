@@ -59,3 +59,11 @@ encrypted/OS secret storage; user-facing account disposal; broader mailboxes bey
 the preview cap; production readiness of SQLite runtime; automated browser regression;
 Outlook adapter.
 Remote hosting/multi-user auth requires a new security design, not a config switch.
+
+## D010 — Quota-aware resumable Gmail synchronization
+Status: accepted. All Gmail calls traverse a quota-unit token bucket with conservative
+defaults of 2,000 units/minute, burst 400 and concurrency 2. Full pages are upserted
+with atomic SQLite checkpoints and an account lease. Completed full sync stores
+`historyId`; refresh uses `history.list`, with paced full reconciliation after 404.
+Rate limits cool down and resume automatically; authentication fails immediately and
+Trash mutations remain non-retried.

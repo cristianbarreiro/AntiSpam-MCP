@@ -51,11 +51,64 @@ export interface PageInput {
   cursor?: string;
   sender?: SenderAddress;
 }
+export type MailSyncMode = "full" | "incremental";
+export type MailSyncStatus = "idle" | "syncing" | "cooling_down" | "completed" | "failed";
+export interface MailSyncState {
+  accountId: ProviderAccountId;
+  mode: MailSyncMode;
+  status: MailSyncStatus;
+  generation: string;
+  nextPageToken?: string;
+  processedCount: number;
+  estimatedTotal?: number;
+  lastHistoryId?: string;
+  historyStartId?: string;
+  lastProcessedMessageId?: string;
+  lastSuccessfulSyncAt?: string;
+  lastError?: string;
+  retryAt?: string;
+  updatedAt: string;
+}
+export interface MailSyncPage {
+  upserts: MailMessage[];
+  deletedIds: MessageId[];
+  processed: number;
+  nextPageToken?: string;
+  historyId?: string;
+  estimatedTotal?: number;
+}
+export interface MailSyncPageInput {
+  mode: MailSyncMode;
+  pageToken?: string;
+  historyId?: string;
+  limit: number;
+}
+export interface ProviderSyncEvent {
+  type: "quota_wait" | "rate_limited" | "retrying" | "request_succeeded";
+  retryAt?: string;
+  retryAttempt?: number;
+  retryDelayMs?: number;
+  metrics?: {
+    quotaBudget: number;
+    usedQuotaUnits: number;
+    remainingQuotaUnits: number;
+    queueLength: number;
+    activeRequests: number;
+    currentConcurrency: number;
+    retryCount: number;
+    lastRequestAt?: string;
+    lastSuccessfulRequestAt?: string;
+  };
+}
 export interface MailProvider {
   getAccountInfo(): Promise<MailAccount>;
   scanMessages(input: PageInput): Promise<Page<MailMessage>>;
   getMessageMetadata(id: MessageId): Promise<MailMessage>;
   moveToTrash(id: MessageId): Promise<void>;
+  syncPage?(input: MailSyncPageInput): Promise<MailSyncPage>;
+  currentHistoryId?(): Promise<string>;
+  setSyncObserver?(observer: (event: ProviderSyncEvent) => void): void;
+  recordSyncEvent?(event: string, details: Record<string, unknown>): void;
 }
 export interface ClassificationResult {
   classification: Classification;
@@ -215,6 +268,11 @@ export type DashboardJobStage =
   | "preparing_view"
   | "ready"
   | "refreshing"
+  | "discovering"
+  | "syncing"
+  | "incremental_sync"
+  | "cooling_down"
+  | "retrying"
   | "error"
   | "cancelled";
 
@@ -253,6 +311,10 @@ export interface DashboardJobStatus {
   coverage: "complete" | "partial" | "unknown";
   ready: boolean;
   source: "none" | "cache" | "live";
+  syncMode?: MailSyncMode;
+  estimatedTotal?: number;
+  retryAt?: string;
+  quota?: ProviderSyncEvent["metrics"];
   startedAt: string;
   updatedAt: string;
   error?: { code: string; message: string; retryable: boolean };

@@ -15,6 +15,7 @@ not inferred coverage. README owns setup commands and manual Gmail prerequisites
 | Providers | Metadata-only mapping, opaque paging, errors, account scope, Trash-only effects |
 | Cleanup | Non-mutating preview, missing/forged/expired/replayed approval denied, frozen IDs |
 | Recovery | Atomic concurrent claim, cancellation, partial/uncertain provider outcomes, storage failure |
+| Gmail sync | Quota pacing, concurrency, retry/jitter, restart checkpoint, upsert and history fallback |
 | Trust | Email text cannot authorize mutation; no MCP approval issuer; local auth/origin checks |
 | MCP | Official SDK client over paired transport, validated public schemas and vertical slice |
 | UI | Scan/filter/expand/toggle/preview/cancel/confirm/result in mock mode |

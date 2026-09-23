@@ -10,6 +10,9 @@ import type {
   MailboxScanResult,
   MailMessage,
   MailProvider,
+  MailSyncPage,
+  MailSyncState,
+  ProviderSyncEvent,
   SenderGroup,
 } from "./domain.js";
 import { AppError, safeError } from "./errors.js";
@@ -23,6 +26,9 @@ export class MailboxService {
   private dashboardSnapshotValue: DashboardSnapshot | undefined;
   private dashboardJob: Promise<DashboardSnapshot> | undefined;
   private dashboardStatusValue: DashboardJobStatus;
+  private activeSyncState: MailSyncState | undefined;
+  private readonly syncOwner = randomUUID();
+  private syncLeaseHeld = false;
   constructor(
     readonly provider: MailProvider,
     readonly store: Store,
@@ -44,6 +50,7 @@ export class MailboxService {
       startedAt: timestamp,
       updatedAt: timestamp,
     };
+    this.provider.setSyncObserver?.((event) => this.onProviderSyncEvent(event));
   }
   assertAccount(m: MailMessage) {
     if (m.accountId !== this.account.id) throw new AppError("PERMISSION_DENIED");
@@ -86,7 +93,94 @@ export class MailboxService {
       updatedAt: new Date(this.now()).toISOString(),
     };
   }
+  private onProviderSyncEvent(event: ProviderSyncEvent) {
+    if (!this.dashboardJob && !this.activeSyncState) return;
+    if (event.type === "quota_wait" || event.type === "rate_limited") {
+      this.updateDashboardStatus({
+        stage: "cooling_down",
+        retryAt: event.retryAt,
+        quota: event.metrics,
+      });
+      if (this.activeSyncState) {
+        this.activeSyncState = {
+          ...this.activeSyncState,
+          status: "cooling_down",
+          retryAt: event.retryAt,
+          updatedAt: new Date(this.now()).toISOString(),
+        };
+        this.store.saveSyncPage(this.activeSyncState, [], []);
+      }
+      return;
+    }
+    if (event.type === "retrying") {
+      this.updateDashboardStatus({
+        stage: "retrying",
+        retryAt: event.retryAt,
+        quota: event.metrics,
+      });
+      return;
+    }
+    if (this.activeSyncState?.status === "cooling_down") {
+      this.activeSyncState = {
+        ...this.activeSyncState,
+        status: "syncing",
+        retryAt: undefined,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      this.store.saveSyncPage(this.activeSyncState, [], []);
+      this.updateDashboardStatus({
+        stage: this.activeSyncState.mode === "incremental" ? "incremental_sync" : "syncing",
+        retryAt: undefined,
+        quota: event.metrics,
+      });
+    } else if (event.metrics) {
+      this.updateDashboardStatus({ quota: event.metrics });
+    }
+  }
   dashboardStatus(): DashboardJobStatus {
+    if (
+      !this.dashboardJob &&
+      ["discovering", "syncing", "incremental_sync", "cooling_down", "retrying"].includes(
+        this.dashboardStatusValue.stage,
+      )
+    ) {
+      const state = this.store.syncState(this.account.id);
+      if (state && state.updatedAt > this.dashboardStatusValue.updatedAt) {
+        const snapshot = this.store.dashboardSnapshot(
+          this.account.id,
+          this.dashboardStatusValue.scopeKey,
+        );
+        if (snapshot) this.restoreSnapshot(snapshot);
+        this.updateDashboardStatus({
+          stage:
+            state.status === "completed" || state.status === "idle"
+              ? "ready"
+              : state.status === "failed"
+                ? "error"
+                : state.status === "cooling_down"
+                  ? "cooling_down"
+                  : state.mode === "incremental"
+                    ? "incremental_sync"
+                    : "syncing",
+          processed: state.processedCount,
+          total: state.estimatedTotal ?? null,
+          estimatedTotal: state.estimatedTotal,
+          retryAt: state.retryAt,
+          syncMode: state.mode,
+          ready: Boolean(snapshot),
+          source: snapshot ? "live" : "none",
+          ...(state.status === "failed"
+            ? {
+                error: {
+                  code: state.lastError ?? "PROVIDER_ERROR",
+                  message: "The provider could not complete the request. Refresh before retrying.",
+                  retryable: true,
+                },
+              }
+            : {}),
+        });
+      }
+    }
     return structuredClone(this.dashboardStatusValue);
   }
   dashboardSnapshot(): DashboardSnapshot {
@@ -143,6 +237,275 @@ export class MailboxService {
     this.cache = { messages, summary: snapshot.scan, expires: this.now() + 300000 };
     this.dashboardSnapshotValue = snapshot;
   }
+  private summary(messages: MailMessage[], maxMessages: number, complete: boolean) {
+    const groups = this.groups(messages);
+    const classificationSummary: MailboxScanResult["classificationSummary"] = {};
+    for (const group of groups)
+      classificationSummary[group.classification.classification] =
+        (classificationSummary[group.classification.classification] ?? 0) + 1;
+    const summary: MailboxScanResult = {
+      requestedLimit: maxMessages,
+      scannedMessages: messages.length,
+      senderCount: groups.length,
+      complete,
+      generatedAt: new Date(this.now()).toISOString(),
+      classificationSummary,
+    };
+    return summary;
+  }
+  private publishSyncedSnapshot(
+    messages: MailMessage[],
+    maxMessages: number,
+    complete: boolean,
+    scopeKey: string,
+  ) {
+    const summary = this.summary(messages, maxMessages, complete);
+    const snapshot = this.buildSnapshot(messages, summary, scopeKey);
+    this.store.saveDashboardSnapshot(snapshot);
+    this.cache = { messages, summary, expires: this.now() + 300000 };
+    this.dashboardSnapshotValue = snapshot;
+    this.updateDashboardStatus({
+      datasetVersion: snapshot.datasetVersion,
+      processed: this.activeSyncState?.processedCount ?? messages.length,
+      total: this.activeSyncState?.estimatedTotal ?? null,
+      estimatedTotal: this.activeSyncState?.estimatedTotal,
+      coverage: complete ? "complete" : "partial",
+      ready: true,
+      source: "live",
+    });
+    return snapshot;
+  }
+  private newFullSyncState(): MailSyncState {
+    return {
+      accountId: this.account.id,
+      mode: "full",
+      status: "syncing",
+      generation: randomUUID(),
+      processedCount: 0,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+  }
+  private async prepareSynchronizedDashboard(maxMessages: number, scopeKey: string) {
+    const syncPage = this.provider.syncPage;
+    const currentHistoryId = this.provider.currentHistoryId;
+    if (!syncPage || !currentHistoryId) throw new AppError("INTERNAL_ERROR");
+    let state = this.store.syncState(this.account.id);
+    const pausedFullProcessed =
+      state?.mode === "full" && state.status === "idle" ? state.processedCount : undefined;
+    if (!state || (state.status === "completed" && !state.lastHistoryId))
+      state = this.newFullSyncState();
+    else if (state.status === "completed" && state.lastHistoryId)
+      state = {
+        ...state,
+        mode: "incremental",
+        status: "syncing",
+        nextPageToken: undefined,
+        historyStartId: state.lastHistoryId,
+        processedCount: 0,
+        estimatedTotal: undefined,
+        lastError: undefined,
+        retryAt: undefined,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+    else
+      state = {
+        ...state,
+        status: "syncing",
+        lastError: undefined,
+        retryAt: undefined,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+    if (state.mode === "full" && !state.lastHistoryId)
+      state.lastHistoryId = await currentHistoryId.call(this.provider);
+    const fullTarget = Math.min(
+      10000,
+      pausedFullProcessed === undefined
+        ? Math.max(maxMessages, state.processedCount)
+        : Math.max(maxMessages, pausedFullProcessed + maxMessages),
+    );
+    if (state.mode === "full" && state.processedCount >= fullTarget)
+      state = {
+        ...state,
+        status: "idle",
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+    this.activeSyncState = state;
+    this.store.saveSyncPage(state, [], []);
+    this.provider.recordSyncEvent?.(
+      state.mode === "incremental" ? "incremental_sync_started" : "sync_started",
+      {
+        syncType: state.mode,
+        processed: state.processedCount,
+        estimatedTotal: state.estimatedTotal,
+      },
+    );
+    this.updateDashboardStatus({
+      stage: state.mode === "incremental" ? "incremental_sync" : "discovering",
+      syncMode: state.mode,
+      processed: state.processedCount,
+      total: state.estimatedTotal ?? null,
+      estimatedTotal: state.estimatedTotal,
+      percent: null,
+      error: undefined,
+    });
+    let publishedAt = this.dashboardSnapshotValue ? state.processedCount : 0;
+    let restartedFullSync = false;
+    for (
+      let pages = 0;
+      pages < 1000 && (state.mode === "incremental" || state.processedCount < fullTarget);
+      pages++
+    ) {
+      this.store.renewSyncLease(
+        this.account.id,
+        this.syncOwner,
+        new Date(this.now() + 300000).toISOString(),
+      );
+      let page: MailSyncPage;
+      try {
+        page = await syncPage.call(this.provider, {
+          mode: state.mode,
+          ...(state.nextPageToken ? { pageToken: state.nextPageToken } : {}),
+          ...(state.mode === "incremental"
+            ? { historyId: state.historyStartId ?? state.lastHistoryId }
+            : {}),
+          limit: Math.min(100, Math.max(1, fullTarget - state.processedCount)),
+        });
+      } catch (error) {
+        if (
+          state.mode === "incremental" &&
+          error instanceof AppError &&
+          error.code === "NOT_FOUND" &&
+          !restartedFullSync
+        ) {
+          restartedFullSync = true;
+          state = this.newFullSyncState();
+          state.lastHistoryId = await currentHistoryId.call(this.provider);
+          this.activeSyncState = state;
+          this.store.saveSyncPage(state, [], []);
+          this.updateDashboardStatus({
+            stage: "discovering",
+            syncMode: "full",
+            processed: 0,
+            total: null,
+            estimatedTotal: undefined,
+          });
+          continue;
+        }
+        if (
+          state.mode === "full" &&
+          state.nextPageToken &&
+          error instanceof AppError &&
+          error.code === "VALIDATION_ERROR" &&
+          !restartedFullSync
+        ) {
+          restartedFullSync = true;
+          state = this.newFullSyncState();
+          state.lastHistoryId = await currentHistoryId.call(this.provider);
+          this.activeSyncState = state;
+          this.store.saveSyncPage(state, [], []);
+          this.updateDashboardStatus({
+            stage: "discovering",
+            syncMode: "full",
+            processed: 0,
+            total: null,
+            estimatedTotal: undefined,
+          });
+          continue;
+        }
+        throw error;
+      }
+      const complete: boolean = !page.nextPageToken;
+      const processedCount: number = state.processedCount + page.processed;
+      state = {
+        ...state,
+        status: complete ? "completed" : "syncing",
+        nextPageToken: page.nextPageToken,
+        processedCount,
+        estimatedTotal: page.estimatedTotal ?? state.estimatedTotal,
+        lastProcessedMessageId: page.upserts.at(-1)?.id ?? state.lastProcessedMessageId,
+        lastHistoryId:
+          state.mode === "incremental" && complete
+            ? (page.historyId ?? state.lastHistoryId)
+            : state.lastHistoryId,
+        historyStartId: state.mode === "incremental" && complete ? undefined : state.historyStartId,
+        lastSuccessfulSyncAt: complete
+          ? new Date(this.now()).toISOString()
+          : state.lastSuccessfulSyncAt,
+        lastError: undefined,
+        retryAt: undefined,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      this.activeSyncState = state;
+      this.store.saveSyncPage(state, page.upserts, page.deletedIds);
+      this.provider.recordSyncEvent?.("checkpoint_saved", {
+        syncType: state.mode,
+        processed: state.processedCount,
+        estimatedTotal: state.estimatedTotal,
+      });
+      this.updateDashboardStatus({
+        stage: state.mode === "incremental" ? "incremental_sync" : "syncing",
+        syncMode: state.mode,
+        processed: state.processedCount,
+        total: state.estimatedTotal ?? null,
+        estimatedTotal: state.estimatedTotal,
+        percent:
+          state.estimatedTotal && state.estimatedTotal > 0
+            ? Math.min(99, Math.round((state.processedCount / state.estimatedTotal) * 100))
+            : null,
+        retryAt: undefined,
+      });
+      const shouldPublish =
+        complete ||
+        (state.mode === "full" &&
+          state.processedCount >= 200 &&
+          (!this.dashboardSnapshotValue || state.processedCount - publishedAt >= 500));
+      if (shouldPublish) {
+        const messages = this.store.syncMessages(this.account.id, maxMessages);
+        this.publishSyncedSnapshot(messages, maxMessages, complete, scopeKey);
+        publishedAt = state.processedCount;
+      }
+      if (complete) break;
+      if (state.mode === "full" && state.processedCount >= fullTarget) {
+        state = {
+          ...state,
+          status: "idle",
+          updatedAt: new Date(this.now()).toISOString(),
+        };
+        this.activeSyncState = state;
+        this.store.saveSyncPage(state, [], []);
+        break;
+      }
+    }
+    const complete = state.status === "completed";
+    const messages = this.store.syncMessages(this.account.id, maxMessages);
+    const snapshot = this.publishSyncedSnapshot(messages, maxMessages, complete, scopeKey);
+    this.store.audit(this.account.id, "SCAN_COMPLETED", {
+      count: messages.length,
+      result: complete ? (state.mode === "incremental" ? "INCREMENTAL" : "COMPLETE") : "PARTIAL",
+    });
+    this.provider.recordSyncEvent?.(
+      state.mode === "incremental" ? "incremental_sync_completed" : "full_sync_completed",
+      {
+        syncType: state.mode,
+        processed: state.processedCount,
+        estimatedTotal: state.estimatedTotal,
+        complete,
+      },
+    );
+    this.updateDashboardStatus({
+      stage: "ready",
+      processed: state.processedCount,
+      total: state.estimatedTotal ?? messages.length,
+      percent: complete ? 100 : null,
+      coverage: complete ? "complete" : "partial",
+      ready: true,
+      source: "live",
+      retryAt: undefined,
+      error: undefined,
+    });
+    this.activeSyncState = undefined;
+    return snapshot;
+  }
   private async prepareDashboard(maxMessages: number, scopeKey: string) {
     this.updateDashboardStatus({
       stage: this.dashboardSnapshotValue ? "refreshing" : "connecting",
@@ -151,6 +514,8 @@ export class MailboxService {
       percent: this.dashboardSnapshotValue ? null : 5,
     });
     this.updateDashboardStatus({ stage: "fetching", percent: null });
+    if (this.provider.syncPage && this.provider.currentHistoryId)
+      return this.prepareSynchronizedDashboard(maxMessages, scopeKey);
     const { messages, complete } = await this.collect(maxMessages, undefined, (processed) =>
       this.updateDashboardStatus({ processed }),
     );
@@ -231,6 +596,44 @@ export class MailboxService {
         return this.dashboardStatus();
       }
     }
+    const leaseExpiresAt = new Date(this.now() + 300000).toISOString();
+    if (
+      !this.store.acquireSyncLease(
+        this.account.id,
+        this.syncOwner,
+        leaseExpiresAt,
+        new Date(this.now()).toISOString(),
+      )
+    ) {
+      const state = this.store.syncState(this.account.id);
+      const cached = this.store.dashboardSnapshot(this.account.id, scopeKey);
+      if (cached) this.restoreSnapshot(cached);
+      const timestamp = new Date(this.now()).toISOString();
+      this.dashboardStatusValue = {
+        jobId: randomUUID(),
+        accountKey: this.account.id,
+        scopeKey,
+        stage:
+          state?.status === "cooling_down"
+            ? "cooling_down"
+            : state?.mode === "incremental"
+              ? "incremental_sync"
+              : "syncing",
+        processed: state?.processedCount ?? 0,
+        total: state?.estimatedTotal ?? null,
+        percent: null,
+        coverage: cached?.scan.complete ? "complete" : cached ? "partial" : "unknown",
+        ready: Boolean(cached),
+        source: cached ? "cache" : "none",
+        startedAt: timestamp,
+        updatedAt: state?.updatedAt ?? timestamp,
+        syncMode: state?.mode,
+        estimatedTotal: state?.estimatedTotal,
+        retryAt: state?.retryAt,
+      };
+      return this.dashboardStatus();
+    }
+    this.syncLeaseHeld = true;
     const timestamp = new Date(this.now()).toISOString();
     const hasUsableSnapshot = this.dashboardSnapshotValue?.scopeKey === scopeKey;
     this.dashboardStatusValue = {
@@ -254,6 +657,15 @@ export class MailboxService {
     this.dashboardJob = this.prepareDashboard(maxMessages, scopeKey)
       .catch((error) => {
         const safe = safeError(error);
+        if (this.activeSyncState) {
+          this.activeSyncState = {
+            ...this.activeSyncState,
+            status: "failed",
+            lastError: safe.code,
+            updatedAt: new Date(this.now()).toISOString(),
+          };
+          this.store.saveSyncPage(this.activeSyncState, [], []);
+        }
         this.updateDashboardStatus({
           stage: "error",
           percent: null,
@@ -267,6 +679,11 @@ export class MailboxService {
       })
       .finally(() => {
         this.dashboardJob = undefined;
+        this.activeSyncState = undefined;
+        if (this.syncLeaseHeld) {
+          this.store.releaseSyncLease(this.account.id, this.syncOwner);
+          this.syncLeaseHeld = false;
+        }
       });
     void this.dashboardJob.catch(() => undefined);
     return this.dashboardStatus();

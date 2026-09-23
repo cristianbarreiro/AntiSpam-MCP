@@ -31,6 +31,15 @@ async function main() {
             c.GOOGLE_CLIENT_SECRET ?? "",
             c.GOOGLE_REFRESH_TOKEN ?? "",
           ),
+          {
+            quotaBudgetPerMinute: c.GMAIL_SYNC_QUOTA_BUDGET_PER_MINUTE,
+            maximumBurst: c.GMAIL_SYNC_MAXIMUM_BURST,
+            concurrency: c.GMAIL_SYNC_CONCURRENCY,
+            maxBackoffMs: c.GMAIL_SYNC_MAX_BACKOFF_MS,
+            maxRetries: c.GMAIL_SYNC_MAX_RETRIES,
+            logger: (event, details) =>
+              process.stderr.write(`${JSON.stringify({ event, ...details })}\n`),
+          },
         );
   const account = await provider.getAccountInfo();
   const mailbox = new MailboxService(provider, store, account);

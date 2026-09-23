@@ -66,6 +66,21 @@ The refresh-token file is ignored by Git. Protect `.data/` and `secrets/` with y
 operating-system account permissions. Gmail OAuth/API behavior still requires
 manual verification with an explicitly authorized test account.
 
+Gmail synchronization is local-first and quota-aware. It defaults to 2,000 quota
+units/minute, a 400-unit burst and concurrency 2. Pages and checkpoints are committed
+to SQLite, later refreshes use Gmail history, and temporary limits resume
+automatically. Override the conservative defaults only when needed:
+
+```dotenv
+GMAIL_SYNC_QUOTA_BUDGET_PER_MINUTE=2000
+GMAIL_SYNC_MAXIMUM_BURST=400
+GMAIL_SYNC_CONCURRENCY=2
+GMAIL_SYNC_MAX_BACKOFF_MS=64000
+GMAIL_SYNC_MAX_RETRIES=8
+```
+
+See [Gmail safe sync](docs/GMAIL_SAFE_SYNC.md) for recovery and persistence details.
+
 ## Commands
 
 | Command | Purpose |

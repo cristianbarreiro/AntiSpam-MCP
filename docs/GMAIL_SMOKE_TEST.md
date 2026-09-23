@@ -20,7 +20,11 @@ del propietario. No se ejecuta en CI y no constituye permiso para usar un buzón
   `resultSizeEstimate` no aparezca como total exacto.
 - Revisar ventanas 7/30/90, paginación, remitente mixto y ausencia de cuerpos/adjuntos.
 - Provocar de forma controlada un rate limit de lectura o simularlo en transporte;
-  verificar backoff acotado y un error visible al agotarse.
+  verificar enfriamiento visible, checkpoint conservado y reanudación automática. Si
+  se agotan los reintentos acotados, verificar el error terminal.
+- Interrumpir el proceso después de una página, reiniciar y comprobar que continúa
+  desde el checkpoint. Tras completar, confirmar que el siguiente refresh usa
+  `history.list`; probar también la recuperación segura de un `historyId` vencido.
 
 ## Preview y autorización
 

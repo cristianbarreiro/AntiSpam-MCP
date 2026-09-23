@@ -6,4 +6,4 @@ config({ quiet: true });
 const store = new SqliteStore(resolve(process.env.DATABASE_PATH ?? ".data/inboxguardian.sqlite"));
 store.migrate();
 store.close();
-process.stderr.write("SQLite migrations complete (version 1).\n");
+process.stderr.write("SQLite migrations complete (version 3).\n");

@@ -34,6 +34,7 @@ export class AppError extends Error {
   constructor(
     public readonly code: ErrorCode,
     message = messages[code],
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "AppError";

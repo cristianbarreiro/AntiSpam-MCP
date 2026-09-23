@@ -1,6 +1,6 @@
 # Data lifecycle
 
-Status: canonical implemented persistence; schema version 2.
+Status: canonical implemented persistence; schema version 3.
 
 | Data | Ownership/lifecycle |
 | --- | --- |
@@ -24,6 +24,13 @@ only the bounded metadata already exposed by the dashboard, derived classificati
 groups and reports; it never stores bodies, attachments, OAuth credentials or approval
 tokens. Existing policy, preview, outcome and audit rows remain compatible. No heavy
 ORM or unbounded mailbox mirror is introduced.
+
+Schema v3 adds account-scoped `mail_sync_messages`, `mail_sync_state` and
+`mail_sync_leases`. Page metadata and its checkpoint commit in one transaction.
+Message IDs are idempotent primary keys; full-sync generations remove stale rows only
+at successful completion. Sync state retains the next page token, progress,
+`historyId`, retry time and last error across process restarts. Leases contain only a
+random local owner ID and expiry.
 
 Startup pruning removes completed/expired non-running preview records and audit
 records older than 30 days. Uncertain/in-progress operations and their audit records
